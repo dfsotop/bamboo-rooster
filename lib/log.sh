@@ -41,4 +41,23 @@ log_event() {
   local target="${ROOSTER_LOG_FILE:-/var/lib/rooster/log.jsonl}"
   mkdir -p "$(dirname "$target")"
   jq -nc "${jq_args[@]}" "$jq_filter" >>"$target"
+
+  # --- human-readable summary ---------------------------------------------
+  # Same data, one line, terminal-friendly. Errors go to stderr so launchd
+  # routes them to launchd.err and `2>/dev/null` silences them when desired.
+  local human_ts="${ts:11:8}"   # HH:MM:SS slice of the ISO local stamp
+  local glyph
+  case "$event" in
+    success|auth_recovered)                       glyph="✓" ;;
+    failed|auth_failure|api_error|parse_error)    glyph="✗" ;;
+    *)                                            glyph="·" ;;
+  esac
+  local line="${glyph} [${human_ts}] ${phase} ${event}"
+  for kv in "$@"; do
+    line="${line} ${kv}"
+  done
+  case "$event" in
+    failed|auth_failure|api_error|parse_error) printf '%s\n' "$line" >&2 ;;
+    *)                                         printf '%s\n' "$line" ;;
+  esac
 }
