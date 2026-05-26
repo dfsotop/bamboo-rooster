@@ -1,0 +1,21 @@
+# Secrets and runtime state never go in the repo.
+.env
+.env.local
+*.env
+!config/config.example.env
+state.json
+log.jsonl
+cron.err
+launchd.out
+launchd.err
+skip-today
+secrets/
+
+# OS / editor cruft
+.DS_Store
+*.swp
+.vscode/
+.idea/
+
+# Cloned MCP — pulled fresh on install
+bamboohr-mcp/

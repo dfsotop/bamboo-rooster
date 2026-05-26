@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# bamboo-rooster — randomized BambooHR clock events.
+#
+# Usage:
+#   rooster <morning|lunch-out|lunch-in|evening>
+#   rooster --auth-check
+#
+# Reads config from $ROOSTER_HOME/.env, the API key from
+# $ROOSTER_HOME/secrets/api-key, and writes events to $ROOSTER_LOG_FILE.
+
+set -euo pipefail
+
+# --- Bootstrap paths ------------------------------------------------------
+
+ROOSTER_ROOT="${ROOSTER_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+ROOSTER_HOME="${ROOSTER_HOME:-${HOME}/.bamboo-rooster}"
+
+if [[ -f "$ROOSTER_HOME/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOSTER_HOME/.env"
+  set +a
+fi
+
+export ROOSTER_HOME
+export ROOSTER_ROOT
+export STATE_FILE="${STATE_FILE:-$ROOSTER_HOME/state.json}"
+export ROOSTER_LOG_FILE="${ROOSTER_LOG_FILE:-$ROOSTER_HOME/log.jsonl}"
+export SKIP_TODAY_FILE="${SKIP_TODAY_FILE:-$ROOSTER_HOME/skip-today}"
+export ROOSTER_API_KEY_FILE="${ROOSTER_API_KEY_FILE:-$ROOSTER_HOME/secrets/api-key}"
+export WINDOWS_CONF="${WINDOWS_CONF:-$ROOSTER_ROOT/config/windows.conf}"
+
+mkdir -p "$ROOSTER_HOME"
+
+# shellcheck disable=SC1091
+source "$ROOSTER_ROOT/lib/log.sh"
+# shellcheck disable=SC1091
+source "$ROOSTER_ROOT/lib/state.sh"
+# shellcheck disable=SC1091
+source "$ROOSTER_ROOT/lib/auth.sh"
+# shellcheck disable=SC1091
+source "$ROOSTER_ROOT/lib/bamboo.sh"
+# shellcheck disable=SC1091
+source "$ROOSTER_ROOT/lib/gates.sh"
+
+# --- Subcommands ----------------------------------------------------------
+
+if [[ "${1:-}" == "--auth-check" ]]; then
+  PHASE=auth-check
+  # Force a real API round-trip; bypass the env override and the cached
+  # employee ID. Otherwise a revoked key falsely reports "key works"
+  # because resolve_self_employee_id returns the cache without calling out.
+  if response=$(bamboo_request GET "/employees/0/?fields=id") \
+     && id=$(echo "$response" | jq -r '.id // empty') \
+     && [[ -n "$id" ]]; then
+    state_set self_employee_id "$id"
+    echo "✓ key works (employee ID: $id)"
+    exit 0
+  else
+    echo "✗ auth failed (HTTP $(bamboo_last_status)). See $ROOSTER_LOG_FILE." >&2
+    exit 1
+  fi
+fi
+
+PHASE="${1:?usage: rooster <morning|lunch-out|lunch-in|evening>|--auth-check}"
+export PHASE
+
+case "$PHASE" in
+  morning|lunch-out|lunch-in|evening) : ;;
+  *) echo "rooster: unknown phase '$PHASE'" >&2; exit 2 ;;
+esac
+
+today=$(date +%F)
+DRY_RUN="${DRY_RUN:-0}"
+
+# --- Gate 1: manual override ---------------------------------------------
+
+if skip_today_active; then
+  log_event skipped "$PHASE" reason=manual-override
+  exit 0
+fi
+if [[ -f "$SKIP_TODAY_FILE" ]]; then
+  rm -f "$SKIP_TODAY_FILE"
+fi
+
+# --- Gate 2: weekday -----------------------------------------------------
+
+if ! is_weekday "$today"; then
+  log_event skipped "$PHASE" reason=weekend
+  exit 0
+fi
+
+# --- Resolve self employee ID --------------------------------------------
+
+if ! employee_id=$(bamboo_resolve_self_employee_id); then
+  log_event failed "$PHASE" reason=resolve-employee-id http_status="$(bamboo_last_status)"
+  exit 1
+fi
+
+# --- Gate 3: BambooHR time-off + holidays --------------------------------
+
+if is_on_time_off_or_holiday "$employee_id" "$today"; then
+  log_event skipped "$PHASE" reason=time-off-or-holiday
+  exit 0
+fi
+
+# --- Gate 4: idempotency -------------------------------------------------
+
+if already_clocked_for_phase "$employee_id" "$PHASE" "$today"; then
+  log_event skipped "$PHASE" reason=already-clocked
+  exit 0
+fi
+
+# --- Random offset within window -----------------------------------------
+
+if ! window_size=$(window_size_seconds "$PHASE"); then
+  log_event failed "$PHASE" reason=missing-window
+  exit 1
+fi
+
+if (( window_size <= 0 )); then
+  offset=0
+else
+  offset=$(( RANDOM % window_size ))
+fi
+
+log_event planned "$PHASE" offset_seconds="$offset" window_size_seconds="$window_size"
+
+if [[ "$DRY_RUN" == "1" ]]; then
+  log_event dry_run "$PHASE" \
+    would_sleep_seconds="$offset" \
+    would_action="$(action_for_phase "$PHASE")"
+  exit 0
+fi
+
+sleep "$offset"
+
+# Recompute today after the sleep — defensive against a late-window fire
+# crossing local midnight (windows max out at 18:30 + 60min today, so in
+# practice this never crosses, but the assert is cheap).
+today=$(date +%F)
+
+# --- Re-check gates 3 + 4 after sleeping ----------------------------------
+
+if is_on_time_off_or_holiday "$employee_id" "$today" --force-refresh; then
+  log_event skipped "$PHASE" reason=time-off-or-holiday-post-sleep
+  exit 0
+fi
+if already_clocked_for_phase "$employee_id" "$PHASE" "$today"; then
+  log_event skipped "$PHASE" reason=already-clocked-post-sleep
+  exit 0
+fi
+
+# --- Fire the action -----------------------------------------------------
+
+case "$(action_for_phase "$PHASE")" in
+  clock_in)
+    if bamboo_clock_in "$employee_id"; then
+      log_event success "$PHASE" action=clock_in http_status="$(bamboo_last_status)"
+    else
+      log_event failed "$PHASE" action=clock_in http_status="$(bamboo_last_status)"
+      exit 1
+    fi
+    ;;
+  clock_out)
+    if bamboo_clock_out "$employee_id"; then
+      log_event success "$PHASE" action=clock_out http_status="$(bamboo_last_status)"
+    else
+      log_event failed "$PHASE" action=clock_out http_status="$(bamboo_last_status)"
+      exit 1
+    fi
+    ;;
+esac

@@ -1,0 +1,15 @@
+services:
+  rooster:
+    container_name: bamboo-rooster
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: bamboo-rooster:latest
+    restart: unless-stopped
+    environment:
+      TZ: Europe/Madrid
+    volumes:
+      # Single mount carries both the .env config, the api-key file, the
+      # state, and the log. Permissions are enforced by install.sh on the host.
+      - ${HOME}/.bamboo-rooster:/var/lib/rooster
+    # crond runs as PID 1; if it dies the container exits and Docker restarts it.

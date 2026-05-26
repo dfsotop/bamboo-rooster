@@ -1,0 +1,14 @@
+# bamboo-rooster — randomized BambooHR clock events, Mon–Fri.
+# Times are LOCAL — the container runs with TZ=Europe/Madrid.
+#
+# busybox crond only forwards a minimal env (HOME, LOGNAME, PATH, SHELL).
+# Image ENV vars (ROOSTER_HOME, ROOSTER_ROOT, TZ) do NOT propagate to cron
+# jobs — they must be exported in this crontab itself.
+ROOSTER_HOME=/var/lib/rooster
+ROOSTER_ROOT=/opt/rooster
+TZ=Europe/Madrid
+
+30 8  * * 1-5 /opt/rooster/bin/rooster morning   >> /var/lib/rooster/cron.err 2>&1
+45 12 * * 1-5 /opt/rooster/bin/rooster lunch-out >> /var/lib/rooster/cron.err 2>&1
+30 13 * * 1-5 /opt/rooster/bin/rooster lunch-in  >> /var/lib/rooster/cron.err 2>&1
+30 17 * * 1-5 /opt/rooster/bin/rooster evening   >> /var/lib/rooster/cron.err 2>&1

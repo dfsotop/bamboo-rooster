@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# rooster-status — print the last 7 days of events, flag missed phases.
+#
+# A "missed phase" is a workday with no `success` or `skipped` line for one
+# of the four phases (i.e. the cron entry never fired or the host was down).
+
+set -euo pipefail
+
+ROOSTER_HOME="${ROOSTER_HOME:-${HOME}/.bamboo-rooster}"
+LOG_FILE="${ROOSTER_LOG_FILE:-$ROOSTER_HOME/log.jsonl}"
+
+if [[ ! -f "$LOG_FILE" ]]; then
+  echo "no log at $LOG_FILE — has the rooster run yet?" >&2
+  exit 1
+fi
+
+phases=(morning lunch-out lunch-in evening)
+
+# Walk the last 7 calendar days (local TZ).
+for i in 6 5 4 3 2 1 0; do
+  if date --version >/dev/null 2>&1; then
+    day=$(date -d "$i days ago" +%F)
+    dow=$(date -d "$i days ago" +%u)
+  else
+    day=$(date -v-"${i}"d +%F)
+    dow=$(date -v-"${i}"d +%u)
+  fi
+
+  weekday_marker=""
+  if [[ "$dow" -ge 6 ]]; then
+    weekday_marker="  (weekend)"
+  fi
+
+  printf "\n=== %s%s ===\n" "$day" "$weekday_marker"
+
+  # Pull all events for this day.
+  events=$(grep -F "\"ts\":\"${day}T" "$LOG_FILE" || true)
+
+  if [[ -z "$events" ]]; then
+    if [[ "$dow" -le 5 ]]; then
+      echo "  ⚠  no events logged on this workday"
+    else
+      echo "  (no events)"
+    fi
+    continue
+  fi
+
+  for phase in "${phases[@]}"; do
+    line=$(echo "$events" \
+      | jq -rc --arg p "$phase" 'select(.phase == $p) | "\(.ts) \(.event) \(.reason // "") \(.http_status // "")"' \
+      | tail -n 1)
+    if [[ -z "$line" ]]; then
+      if [[ "$dow" -le 5 ]]; then
+        printf "  %-10s ⚠ MISSED\n" "$phase"
+      else
+        printf "  %-10s -\n" "$phase"
+      fi
+    else
+      printf "  %-10s %s\n" "$phase" "$line"
+    fi
+  done
+done
+
+# Print any auth_failure / api_error lines from the last 7 days for visibility.
+echo
+echo "--- Errors in last 7 days ---"
+grep -E '"event":"(auth_failure|api_error|failed)"' "$LOG_FILE" \
+  | tail -n 20 \
+  || echo "  none"

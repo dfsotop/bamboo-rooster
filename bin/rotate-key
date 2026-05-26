@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# rotate-key — interactively replace the BambooHR API key.
+#
+# Reads the new key from stdin (no echo), validates it against
+# /employees/0/?fields=id, and only writes it on success. The cron jobs
+# pick up the new key on their next fire — no container restart needed.
+
+set -euo pipefail
+
+ROOSTER_ROOT="${ROOSTER_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+ROOSTER_HOME="${ROOSTER_HOME:-${HOME}/.bamboo-rooster}"
+
+if [[ -f "$ROOSTER_HOME/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOSTER_HOME/.env"
+  set +a
+fi
+
+KEY_FILE="${ROOSTER_API_KEY_FILE:-$ROOSTER_HOME/secrets/api-key}"
+KEY_DIR=$(dirname "$KEY_FILE")
+mkdir -p "$KEY_DIR"
+chmod 700 "$KEY_DIR" 2>/dev/null || true
+
+if [[ -z "${BAMBOOHR_SUBDOMAIN:-}" ]]; then
+  echo "rotate-key: BAMBOOHR_SUBDOMAIN not set (check $ROOSTER_HOME/.env)" >&2
+  exit 1
+fi
+
+read -r -s -p "new BambooHR API key: " new_key
+echo
+if [[ -z "$new_key" ]]; then
+  echo "rotate-key: empty input, aborting" >&2
+  exit 2
+fi
+
+# Validate against /employees/0/?fields=id with the candidate key.
+status=$(curl -sS -o /dev/null -w "%{http_code}" \
+  --max-time 30 \
+  -u "${new_key}:x" \
+  -H "Accept: application/json" \
+  "https://api.bamboohr.com/api/gateway.php/${BAMBOOHR_SUBDOMAIN}/v1/employees/0/?fields=id" \
+  || echo "000")
+
+if [[ "$status" != 2* ]]; then
+  echo "rotate-key: validation failed (HTTP $status). Key NOT saved." >&2
+  exit 1
+fi
+
+# Atomic write: write to a sibling file then move.
+tmp=$(mktemp "${KEY_DIR}/.api-key.XXXXXX")
+printf '%s' "$new_key" >"$tmp"
+chmod 600 "$tmp"
+mv "$tmp" "$KEY_FILE"
+echo "✓ key saved to $KEY_FILE (HTTP $status). Next cron run will use it."
