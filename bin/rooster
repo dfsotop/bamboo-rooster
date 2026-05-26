@@ -186,47 +186,39 @@ if skip_detail=$(already_clocked_for_phase "$employee_id" "$PHASE" "$today"); th
   exit 0
 fi
 
-# --- Pick a random target time INSIDE today's phase window --------------
-# Absolute-time target — not "now + offset". Same target whether invoked
-# by launchd at 08:30 (we'll sleep until target), inside the window (short
-# sleep), or after the window has closed (sleep 0, BambooHR clock event
-# is backdated to the target via clockInTime).
+# --- Random sleep spread before the action -------------------------------
+# Pick a uniform-random offset in [0, window_size_seconds) and sleep that
+# long. The clock event fires at "now + offset" — no window-bound target,
+# no backdating. BambooHR ignores clockInTime in submissions anyway and
+# always uses its own "now"; trying to backdate was theatre.
+#
+# Scheduling is the launchd plist's job, not this script's. Invoking
+# manually outside the configured window will clock at the invocation
+# moment plus the random spread; that's intended.
 
-if ! window_bounds=$(window_bounds_today "$PHASE"); then
+if ! window_size=$(window_size_seconds "$PHASE"); then
   log_event failed "$PHASE" reason=missing-window
   exit 1
 fi
-read -r window_start_epoch window_end_epoch <<<"$window_bounds"
-window_size=$(( window_end_epoch - window_start_epoch ))
 
 if (( window_size <= 0 )); then
-  target_epoch="$window_start_epoch"
+  offset=0
 else
-  target_epoch=$(( window_start_epoch + RANDOM % window_size ))
-fi
-target_iso=$(epoch_to_iso_local "$target_epoch")
-
-now_epoch=$(date +%s)
-if (( target_epoch > now_epoch )); then
-  sleep_seconds=$(( target_epoch - now_epoch ))
-else
-  sleep_seconds=0
+  offset=$(( RANDOM % window_size ))
 fi
 
 log_event planned "$PHASE" \
-  target_iso="$target_iso" \
-  sleep_seconds="$sleep_seconds" \
+  offset_seconds="$offset" \
   window_size_seconds="$window_size"
 
 if [[ "$DRY_RUN" == "1" ]]; then
   log_event dry_run "$PHASE" \
-    target_iso="$target_iso" \
-    sleep_seconds="$sleep_seconds" \
+    would_sleep_seconds="$offset" \
     would_action="$(action_for_phase "$PHASE")"
   exit 0
 fi
 
-sleep "$sleep_seconds"
+sleep "$offset"
 
 # Recompute today after the sleep — defensive against late fires crossing
 # local midnight (windows max out at 18:30 + 60min so in practice never).
@@ -252,18 +244,18 @@ fi
 
 case "$(action_for_phase "$PHASE")" in
   clock_in)
-    if bamboo_clock_in "$employee_id" "$target_iso"; then
-      log_event success "$PHASE" action=clock_in target_iso="$target_iso" http_status="$(bamboo_last_status)"
+    if bamboo_clock_in "$employee_id"; then
+      log_event success "$PHASE" action=clock_in http_status="$(bamboo_last_status)"
     else
-      log_event failed "$PHASE" action=clock_in target_iso="$target_iso" http_status="$(bamboo_last_status)"
+      log_event failed "$PHASE" action=clock_in http_status="$(bamboo_last_status)"
       exit 1
     fi
     ;;
   clock_out)
-    if bamboo_clock_out "$employee_id" "$target_iso"; then
-      log_event success "$PHASE" action=clock_out target_iso="$target_iso" http_status="$(bamboo_last_status)"
+    if bamboo_clock_out "$employee_id"; then
+      log_event success "$PHASE" action=clock_out http_status="$(bamboo_last_status)"
     else
-      log_event failed "$PHASE" action=clock_out target_iso="$target_iso" http_status="$(bamboo_last_status)"
+      log_event failed "$PHASE" action=clock_out http_status="$(bamboo_last_status)"
       exit 1
     fi
     ;;

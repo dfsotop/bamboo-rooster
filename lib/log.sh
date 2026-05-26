@@ -79,21 +79,6 @@ _epoch_hhmmss() {
   fi
 }
 
-# ISO 8601 → local HH:MM:SS. Accepts both UTC ("…Z") and local-with-offset
-# ("…+02:00") shapes. Returns the input untouched on parse failure.
-_iso_utc_to_local_hhmmss() {
-  local iso="$1" e
-  if date --version >/dev/null 2>&1; then
-    e=$(date -d "$iso" +%s 2>/dev/null) || { echo "$iso"; return; }
-  else
-    # BSD date can't read "+02:00" — strip the colon and rewrite Z → +0000.
-    local cleaned
-    cleaned=$(echo "$iso" | sed -E 's/([+-][0-9]{2}):([0-9]{2})$/\1\2/' | sed 's/Z$/+0000/')
-    e=$(date -j -f "%Y-%m-%dT%H:%M:%S%z" "$cleaned" +%s 2>/dev/null) || { echo "$iso"; return; }
-  fi
-  _epoch_hhmmss "$e"
-}
-
 # Map opaque skip reasons to short readable strings.
 _skip_reason_human() {
   case "$1" in
@@ -116,32 +101,20 @@ _emit_human() {
   local line=""
   case "$event" in
     planned)
-      local target_iso sleep_s fire_at mins
-      target_iso=$(_kv target_iso "$@")
-      sleep_s=$(_kv sleep_seconds "$@")
-      fire_at=$(_iso_utc_to_local_hhmmss "$target_iso")
-      mins=$(( sleep_s / 60 ))
-      if (( sleep_s > 0 )); then
-        line=$(printf '· [%s] %s: will %s at %s (in %d min)' \
-               "$human_ts" "$phase" "$action" "$fire_at" "$mins")
-      else
-        line=$(printf '· [%s] %s: will %s now, backdated to %s (window has passed)' \
-               "$human_ts" "$phase" "$action" "$fire_at")
-      fi
+      local offset fire_at mins
+      offset=$(_kv offset_seconds "$@")
+      fire_at=$(_epoch_hhmmss $(( $(date +%s) + offset )))
+      mins=$(( offset / 60 ))
+      line=$(printf '· [%s] %s: will %s at %s (in %d min)' \
+             "$human_ts" "$phase" "$action" "$fire_at" "$mins")
       ;;
     dry_run)
-      local target_iso sleep_s fire_at mins
-      target_iso=$(_kv target_iso "$@")
-      sleep_s=$(_kv sleep_seconds "$@")
-      fire_at=$(_iso_utc_to_local_hhmmss "$target_iso")
+      local sleep_s fire_at mins
+      sleep_s=$(_kv would_sleep_seconds "$@")
+      fire_at=$(_epoch_hhmmss $(( $(date +%s) + sleep_s )))
       mins=$(( sleep_s / 60 ))
-      if (( sleep_s > 0 )); then
-        line=$(printf '· [%s] %s: DRY RUN — would %s at %s (in %d min), no action taken' \
-               "$human_ts" "$phase" "$action" "$fire_at" "$mins")
-      else
-        line=$(printf '· [%s] %s: DRY RUN — would %s now, backdated to %s, no action taken' \
-               "$human_ts" "$phase" "$action" "$fire_at")
-      fi
+      line=$(printf '· [%s] %s: DRY RUN — would %s at %s (in %d min), no action taken' \
+             "$human_ts" "$phase" "$action" "$fire_at" "$mins")
       ;;
     skipped)
       local r; r=$(_kv reason "$@")
@@ -173,24 +146,15 @@ _emit_human() {
       esac
       ;;
     success)
-      local status target_iso target_at
-      status=$(_kv http_status "$@")
-      target_iso=$(_kv target_iso "$@")
-      target_at=""
-      [[ -n "$target_iso" ]] && target_at=$(_iso_utc_to_local_hhmmss "$target_iso")
+      local status; status=$(_kv http_status "$@")
       # Past-tense the action: "clock in" → "clocked in".
       local pt; case "$action" in
         "clock in")  pt="clocked in" ;;
         "clock out") pt="clocked out" ;;
         *)           pt="acted" ;;
       esac
-      if [[ -n "$target_at" ]]; then
-        line=$(printf '✓ [%s] %s: %s at %s (HTTP %s)' \
-               "$human_ts" "$phase" "$pt" "$target_at" "$status")
-      else
-        line=$(printf '✓ [%s] %s: %s (HTTP %s)' \
-               "$human_ts" "$phase" "$pt" "$status")
-      fi
+      line=$(printf '✓ [%s] %s: %s (HTTP %s)' \
+             "$human_ts" "$phase" "$pt" "$status")
       ;;
     failed)
       local status; status=$(_kv http_status "$@")

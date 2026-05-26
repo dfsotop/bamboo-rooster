@@ -223,56 +223,18 @@ already_clocked_for_phase() {
 
 # --- Window helpers -------------------------------------------------------
 
-# Window math is expressed in ABSOLUTE local-today epochs so that the
-# target clock time is always inside the configured window — regardless
-# of when the script was invoked. cron-fired at 08:30 and `rooster morning`
-# manually fired at 10:30 both target the same 08:30–09:30 window;
-# manual fires past the window backdate via clockInTime.
-
-# Today's local-midnight as an epoch.
-today_midnight_epoch() {
-  local today; today=$(date +%F)
-  if date --version >/dev/null 2>&1; then
-    date -d "${today} 00:00:00" +%s
-  else
-    date -j -f "%Y-%m-%d %H:%M:%S" "${today} 00:00:00" +%s
-  fi
-}
-
-# Returns "<start_epoch> <end_epoch>" for the phase's window today.
-window_bounds_today() {
+# window_size_seconds — random sleep spread (window's end minus start) per
+# phase. The script does NOT enforce that the clock event lands inside the
+# absolute window; the launchd plist controls when this is invoked, and
+# manual invocations are allowed at any time.
+window_size_seconds() {
   : "${WINDOWS_CONF:?WINDOWS_CONF must be set}"
   local phase="$1"
   local line start end
   line=$(grep -E "^${phase}[[:space:]]" "$WINDOWS_CONF") \
     || { echo "rooster: no window for phase '$phase' in $WINDOWS_CONF" >&2; return 1; }
   read -r _ start end <<<"$line"
-  local midnight; midnight=$(today_midnight_epoch)
-  echo "$(( midnight + $(_hhmm_to_seconds "$start") )) $(( midnight + $(_hhmm_to_seconds "$end") ))"
-}
-
-# Window size in seconds — kept for diagnostics in log lines.
-window_size_seconds() {
-  local phase="$1"
-  local bounds; bounds=$(window_bounds_today "$phase") || return 1
-  local s e; read -r s e <<<"$bounds"
-  echo $(( e - s ))
-}
-
-# Portable epoch → ISO 8601 LOCAL with offset ("2026-05-26T10:53:14+02:00").
-# We send local-with-offset to BambooHR rather than UTC because their UI
-# displays the wire timestamp literally — sending Z makes the dashboard
-# show UTC times instead of the user's local clock.
-epoch_to_iso_local() {
-  local e="$1" raw
-  if date --version >/dev/null 2>&1; then
-    raw=$(date -d "@$e" +%Y-%m-%dT%H:%M:%S%:z)
-  else
-    # BSD date has no %:z — produce "+0200" and inject the colon.
-    raw=$(date -r "$e" +%Y-%m-%dT%H:%M:%S%z)
-    raw=$(echo "$raw" | sed -E 's/([+-][0-9]{2})([0-9]{2})$/\1:\2/')
-  fi
-  echo "$raw"
+  echo $(( $(_hhmm_to_seconds "$end") - $(_hhmm_to_seconds "$start") ))
 }
 
 # BambooHR timestamps ("2026-05-22T07:15:00+00:00") → local "HH:MM".
