@@ -43,19 +43,129 @@ log_event() {
   jq -nc "${jq_args[@]}" "$jq_filter" >>"$target"
 
   # --- human-readable summary ---------------------------------------------
-  # Same data, one line, terminal-friendly. Errors go to stderr so launchd
-  # routes them to launchd.err and `2>/dev/null` silences them when desired.
-  local human_ts="${ts:11:8}"   # HH:MM:SS slice of the ISO local stamp
-  local glyph
-  case "$event" in
-    success|auth_recovered)                       glyph="✓" ;;
-    failed|auth_failure|api_error|parse_error)    glyph="✗" ;;
-    *)                                            glyph="·" ;;
-  esac
-  local line="${glyph} [${human_ts}] ${phase} ${event}"
+  # Same event as the JSONL line above, rendered as a plain English sentence.
+  # Errors go to stderr so launchd splits launchd.out vs launchd.err.
+  _emit_human "$event" "$phase" "$ts" "$@"
+}
+
+# Look up a key=value pair from a list of args. Echoes the value (or empty).
+_kv() {
+  local key="$1"; shift
   for kv in "$@"; do
-    line="${line} ${kv}"
+    if [[ "${kv%%=*}" == "$key" ]]; then
+      echo "${kv#*=}"
+      return 0
+    fi
   done
+  echo ""
+}
+
+# The natural-language verb for a phase.
+_phase_action() {
+  case "$1" in
+    morning|lunch-in)   echo "clock in" ;;
+    lunch-out|evening)  echo "clock out" ;;
+    *)                  echo "act" ;;
+  esac
+}
+
+# Format an epoch as HH:MM:SS, portably across GNU and BSD date.
+_epoch_hhmmss() {
+  local e="$1"
+  if date --version >/dev/null 2>&1; then
+    date -d "@$e" +%H:%M:%S
+  else
+    date -r "$e" +%H:%M:%S
+  fi
+}
+
+# Map opaque skip reasons to short readable strings.
+_skip_reason_human() {
+  case "$1" in
+    manual-override)                  echo "skip-today flag is set" ;;
+    weekend)                          echo "it's the weekend" ;;
+    time-off-or-holiday)              echo "you're off today (PTO / sick / holiday)" ;;
+    time-off-or-holiday-post-sleep)   echo "you went off-duty while we waited" ;;
+    already-clocked)                  echo "this segment is already in your timesheet" ;;
+    already-clocked-post-sleep)       echo "another source clocked this while we waited" ;;
+    *)                                echo "$1" ;;
+  esac
+}
+
+_emit_human() {
+  local event="$1" phase="$2" ts="$3"
+  shift 3
+  local human_ts="${ts:11:8}"   # HH:MM:SS slice of the ISO local stamp
+  local action; action=$(_phase_action "$phase")
+
+  local line=""
+  case "$event" in
+    planned)
+      local offset; offset=$(_kv offset_seconds "$@")
+      local fire_at; fire_at=$(_epoch_hhmmss $(( $(date +%s) + offset )))
+      local mins=$(( offset / 60 ))
+      line=$(printf '· [%s] %s: will %s at %s (in %d min)' \
+             "$human_ts" "$phase" "$action" "$fire_at" "$mins")
+      ;;
+    dry_run)
+      local sleep_s; sleep_s=$(_kv would_sleep_seconds "$@")
+      local fire_at; fire_at=$(_epoch_hhmmss $(( $(date +%s) + sleep_s )))
+      local mins=$(( sleep_s / 60 ))
+      line=$(printf '· [%s] %s: DRY RUN — would %s at %s (in %d min), no action taken' \
+             "$human_ts" "$phase" "$action" "$fire_at" "$mins")
+      ;;
+    skipped)
+      local r; r=$(_kv reason "$@")
+      line=$(printf '· [%s] %s: skipped — %s' \
+             "$human_ts" "$phase" "$(_skip_reason_human "$r")")
+      ;;
+    success)
+      local status; status=$(_kv http_status "$@")
+      # Past-tense the action: "clock in" → "clocked in".
+      local pt; case "$action" in
+        "clock in")  pt="clocked in" ;;
+        "clock out") pt="clocked out" ;;
+        *)           pt="acted" ;;
+      esac
+      line=$(printf '✓ [%s] %s: %s (HTTP %s)' \
+             "$human_ts" "$phase" "$pt" "$status")
+      ;;
+    failed)
+      local status; status=$(_kv http_status "$@")
+      line=$(printf '✗ [%s] %s: failed to %s (HTTP %s)' \
+             "$human_ts" "$phase" "$action" "$status")
+      ;;
+    auth_failure)
+      local status; status=$(_kv http_status "$@")
+      line=$(printf '✗ [%s] %s: API key rejected (HTTP %s). Run rooster-rotate-key.' \
+             "$human_ts" "$phase" "$status")
+      ;;
+    auth_recovered)
+      line=$(printf '✓ [%s] %s: API key working again' "$human_ts" "$phase")
+      ;;
+    api_error)
+      local status; status=$(_kv http_status "$@")
+      local ep; ep=$(_kv endpoint "$@")
+      local reason; reason=$(_kv reason "$@")
+      if [[ -n "$reason" ]]; then
+        line=$(printf '✗ [%s] %s: API error — %s' "$human_ts" "$phase" "$reason")
+      else
+        line=$(printf '✗ [%s] %s: API error on %s (HTTP %s)' \
+               "$human_ts" "$phase" "${ep:-unknown}" "${status:-000}")
+      fi
+      ;;
+    parse_error)
+      local ep; ep=$(_kv endpoint "$@")
+      line=$(printf '✗ [%s] %s: unexpected response shape from %s' \
+             "$human_ts" "$phase" "${ep:-unknown}")
+      ;;
+    *)
+      # Unknown event type — fall back to the raw form so nothing is hidden.
+      line="· [${human_ts}] ${phase} ${event}"
+      for kv in "$@"; do line="${line} ${kv}"; done
+      ;;
+  esac
+
   case "$event" in
     failed|auth_failure|api_error|parse_error) printf '%s\n' "$line" >&2 ;;
     *)                                         printf '%s\n' "$line" ;;
