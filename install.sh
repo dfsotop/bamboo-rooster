@@ -172,7 +172,29 @@ for phase in morning lunch-out lunch-in evening; do
   echo "  ✓ loaded ${label}"
 done
 
-# --- 8. summary -----------------------------------------------------------
+# --- 8. install CLI shortcuts on PATH -------------------------------------
+# Symlinks into ~/.local/bin so the user can type `rooster`, `rooster-status`,
+# `rooster-rotate-key` from anywhere. The source bin/ scripts stay in the repo;
+# launchd plists keep using the absolute path, so the symlinks only matter for
+# interactive use. `rotate-key` is renamed in the symlink to avoid collisions
+# with other tools using the generic name.
+step "installing CLI shortcuts into ~/.local/bin"
+mkdir -p "$HOME/.local/bin"
+ln -sf "$ROOSTER_ROOT/bin/rooster"        "$HOME/.local/bin/rooster"
+ln -sf "$ROOSTER_ROOT/bin/rooster-status" "$HOME/.local/bin/rooster-status"
+ln -sf "$ROOSTER_ROOT/bin/rotate-key"     "$HOME/.local/bin/rooster-rotate-key"
+echo "  ✓ rooster, rooster-status, rooster-rotate-key linked"
+
+if ! echo ":$PATH:" | grep -q ":$HOME/.local/bin:"; then
+  cat <<EOF
+
+⚠  ~/.local/bin is not on your PATH. Add it:
+    echo 'export PATH="\$HOME/.local/bin:\$PATH"' >> ~/.zshrc
+    source ~/.zshrc
+EOF
+fi
+
+# --- 9. summary -----------------------------------------------------------
 step "active jobs"
 launchctl list | awk -v p="$LABEL_PREFIX" '$3 ~ p { printf "  %s\n", $3 }' || true
 
@@ -196,9 +218,10 @@ cat <<EOF
 
 useful commands:
    tail -f $ROOSTER_HOME/log.jsonl
-   $ROOSTER_ROOT/bin/rooster-status
-   $ROOSTER_ROOT/bin/rooster --auth-check
-   touch $ROOSTER_HOME/skip-today            # bow out for today
+   rooster-status                             # last 7 days summary
+   rooster --auth-check                       # live API key check
+   rooster-rotate-key                         # rotate a revoked key
+   touch $ROOSTER_HOME/skip-today             # bow out for today
    launchctl kickstart gui/${UID_NUM}/${LABEL_PREFIX}.morning   # fire morning manually
-   $ROOSTER_ROOT/uninstall.sh                # remove the launchd jobs
+   $ROOSTER_ROOT/uninstall.sh                 # remove launchd jobs + CLI symlinks
 EOF

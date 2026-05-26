@@ -18,9 +18,19 @@ for phase in morning lunch-out lunch-in evening; do
   echo "✓ removed ${label}"
 done
 
+# Remove the CLI symlinks installed by install.sh, but only if they really
+# are symlinks (defensive — don't clobber an unrelated file by the same name).
+for name in rooster rooster-status rooster-rotate-key; do
+  link="$HOME/.local/bin/$name"
+  if [[ -L "$link" ]]; then
+    rm -f "$link"
+    echo "✓ removed $link"
+  fi
+done
+
 cat <<EOF
 
-launchd jobs unloaded and plists removed.
+launchd jobs unloaded, plists removed, CLI symlinks cleared.
 
 host state at $ROOSTER_HOME is intact. To also wipe config + secrets + logs:
   rm -rf "$ROOSTER_HOME"

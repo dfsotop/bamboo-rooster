@@ -31,18 +31,21 @@ Why launchd instead of cron: launchd re-fires missed jobs after the laptop wakes
 
 ## After install
 
+`install.sh` symlinks the binaries into `~/.local/bin`, so you get three
+PATH commands (no need to cd into the repo):
+
 ```bash
 # tail the structured log
 tail -f ~/.bamboo-rooster/log.jsonl
 
 # last 7 days, missed phases flagged
-./bin/rooster-status
+rooster-status
 
 # force a live API key check (bypasses cache, real HTTP round-trip)
-./bin/rooster --auth-check
+rooster --auth-check
 
 # rotate a revoked or regenerated API key (validates before saving)
-./bin/rotate-key
+rooster-rotate-key
 
 # skip every phase for today (auto-cleared tomorrow)
 touch ~/.bamboo-rooster/skip-today
@@ -50,9 +53,12 @@ touch ~/.bamboo-rooster/skip-today
 # manually fire a phase
 launchctl kickstart "gui/$(id -u)/com.bamboo-rooster.morning"
 
-# remove the launchd jobs (keeps logs/config on disk)
+# remove the launchd jobs + CLI symlinks (keeps logs/config on disk)
 ./uninstall.sh
 ```
+
+If `~/.local/bin` isn't on your PATH, `install.sh` prints the one-liner to
+add it to `~/.zshrc`.
 
 ---
 
