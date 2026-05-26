@@ -281,7 +281,11 @@ if grep -q '^DRY_RUN="\?1"\?' "$ROOSTER_HOME/.env"; then
 
 ⚠  DRY_RUN=1 is still set in $ROOSTER_HOME/.env
    The four jobs are scheduled but will skip the actual clock_in/out HTTP
-   call. Watch the log for a few days, then flip DRY_RUN to "0" to go live.
+   call. Watch the log for a few days, then flip DRY_RUN to "0":
+
+     sed -i.bak 's/^DRY_RUN=.*/DRY_RUN="0"/' $ROOSTER_HOME/.env
+
+   No restart needed — the script re-reads .env on every fire.
 EOF
 fi
 
