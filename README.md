@@ -8,6 +8,18 @@ For the why and the design rationale, read [`wiki/README.md`](wiki/README.md) an
 
 ## Quickstart
 
+**Non-technical Mac user?** Read [`docs/QUICKSTART-FRIENDS.md`](docs/QUICKSTART-FRIENDS.md) — that walks through everything with screenshots-friendly prose. The one-line install:
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/dfsotop/bamboo-rooster/main/setup.sh)"
+```
+
+That downloads to `~/Applications/bamboo-rooster/` and runs the wizard.
+
+---
+
+For everyone else, run from a cloned repo:
+
 `./install.sh` detects your OS and dispatches to the right scheduler — **launchd** on macOS, **systemd** user units on Linux. The interactive prompts are identical.
 
 ```bash

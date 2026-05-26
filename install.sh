@@ -134,6 +134,24 @@ fi
 # --- 4. config: BambooHR API key ------------------------------------------
 if [[ ! -s "$ROOSTER_HOME/secrets/api-key" ]]; then
   step "prompting for BambooHR API key (no echo)"
+
+  # Try to open the API keys page in the browser. We need the subdomain;
+  # use the one we just collected, or fall back to reading from the .env
+  # if this is a re-run after .env was already written.
+  api_sub="${subdomain:-}"
+  if [[ -z "$api_sub" && -f "$ROOSTER_HOME/.env" ]]; then
+    api_sub=$(grep -E '^BAMBOOHR_SUBDOMAIN=' "$ROOSTER_HOME/.env" \
+              | cut -d= -f2- | tr -d '"' | tr -d "'" | tr -d ' ')
+  fi
+  if [[ -n "$api_sub" ]] && command -v open >/dev/null 2>&1; then
+    echo "  → Opening https://${api_sub}.bamboohr.com/settings/api.php in your browser"
+    echo "    1. Click 'Add New Key', name it 'bamboo-rooster', click Generate"
+    echo "    2. Copy the key shown (only displayed once)"
+    echo "    3. Paste below (the key won't show as you type — that's expected)"
+    echo
+    open "https://${api_sub}.bamboohr.com/settings/api.php" >/dev/null 2>&1 || true
+  fi
+
   read -rs -p "BambooHR API key: " key
   echo
   if [[ -z "$key" ]]; then
