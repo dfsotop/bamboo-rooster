@@ -58,3 +58,16 @@ bamboo_clock_out() {
   bamboo_request POST "/time_tracking/employees/${employee_id}/clock_out" \
     "{\"clockOutTime\":\"${clock_time}\"}" >/dev/null
 }
+
+# Update a CLOSED clock entry. BambooHR requires both start and end as
+# local HH:MM strings via /time_tracking/clock_entries/store. Open
+# entries can't be updated through this path — the caller must close
+# them first (clock_out or rooster lunch-out/evening).
+#
+# Args: id, employee_id, date (YYYY-MM-DD), start (HH:MM), end (HH:MM)
+bamboo_update_clock_entry() {
+  local id="$1" employee_id="$2" date="$3" start="$4" end="$5"
+  bamboo_request POST "/time_tracking/clock_entries/store" \
+    "{\"entries\":[{\"id\":${id},\"employeeId\":${employee_id},\"date\":\"${date}\",\"start\":\"${start}\",\"end\":\"${end}\"}]}" \
+    >/dev/null
+}

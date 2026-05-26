@@ -35,6 +35,8 @@ rooster — randomized BambooHR clock-in/out
 Usage:
   rooster <phase>          Run a phase. Gates run, random sleep within the
                            phase window, then clock_in or clock_out.
+  rooster edit ...         Edit a closed clock entry's start/end.
+                           Run `rooster edit --help` for the flags.
   rooster --auth-check     Live API round-trip; verifies the key works.
                            Bypasses the cached employee ID.
   rooster -h | --help      This help.
@@ -106,6 +108,134 @@ source "$ROOSTER_ROOT/lib/bamboo.sh"
 source "$ROOSTER_ROOT/lib/gates.sh"
 
 # --- Subcommands ----------------------------------------------------------
+
+if [[ "${1:-}" == "edit" ]]; then
+  PHASE=edit
+  shift
+  rooster_edit_help() {
+    cat <<'EOF'
+Usage:
+  rooster edit --id <N> --start HH:MM [--end HH:MM]
+  rooster edit --id <N> --start-random HH:MM-HH:MM [--end HH:MM]
+  rooster edit --latest --start HH:MM [--end HH:MM]
+  rooster edit --latest --start-random HH:MM-HH:MM [--end HH:MM]
+
+Edits a CLOSED clock entry's start (and optionally end). BambooHR's
+edit endpoint requires both start and end as local HH:MM strings —
+open entries can't be edited directly. Close the entry first (run
+the next clock-out phase manually, or rooster lunch-out/evening) and
+then edit it.
+
+  --id N                edit this specific entry id
+  --latest              edit today's most recent clock entry
+  --start HH:MM         set the entry's start to this local time
+  --start-random A-B    pick a uniform-random start in [A, B] local
+  --end HH:MM           override the entry's end; otherwise the existing
+                        end is preserved
+EOF
+  }
+
+  edit_id=""
+  edit_start=""
+  edit_start_range=""
+  edit_end=""
+  use_latest=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help) rooster_edit_help; exit 0 ;;
+      --id) edit_id="$2"; shift 2 ;;
+      --latest) use_latest=1; shift ;;
+      --start) edit_start="$2"; shift 2 ;;
+      --start-random) edit_start_range="$2"; shift 2 ;;
+      --end) edit_end="$2"; shift 2 ;;
+      *) echo "rooster edit: unknown arg '$1'" >&2; rooster_edit_help; exit 2 ;;
+    esac
+  done
+
+  if [[ -z "$edit_id" && "$use_latest" -ne 1 ]]; then
+    echo "rooster edit: pass --id <N> or --latest" >&2; exit 2
+  fi
+  if [[ -z "$edit_start" && -z "$edit_start_range" ]]; then
+    echo "rooster edit: pass --start HH:MM or --start-random A-B" >&2; exit 2
+  fi
+
+  if ! employee_id=$(bamboo_resolve_self_employee_id); then
+    echo "rooster edit: could not resolve employee id (HTTP $(bamboo_last_status))" >&2
+    exit 1
+  fi
+
+  today=$(date +%F)
+
+  # Pull today's entries to find the target.
+  if ! response=$(bamboo_get_timesheet_today "$employee_id" "$today"); then
+    echo "rooster edit: timesheet fetch failed (HTTP $(bamboo_last_status))" >&2
+    exit 1
+  fi
+
+  if [[ "$use_latest" -eq 1 ]]; then
+    edit_id=$(echo "$response" | jq -r \
+      'map(select((.type? // "") == "clock")) | sort_by(.start) | last.id // empty')
+    if [[ -z "$edit_id" ]]; then
+      echo "rooster edit: no clock entries found today to edit" >&2
+      exit 1
+    fi
+  fi
+
+  entry=$(echo "$response" | jq -c --argjson id "$edit_id" '.[] | select(.id == $id)')
+  if [[ -z "$entry" || "$entry" == "null" ]]; then
+    echo "rooster edit: entry $edit_id not found in today's timesheet" >&2
+    exit 1
+  fi
+
+  cur_start_iso=$(echo "$entry" | jq -r '.start // empty')
+  cur_end_iso=$(echo "$entry" | jq -r '.end // empty')
+  entry_date=$(echo "$entry" | jq -r '.date // empty')
+
+  # Resolve the new start.
+  if [[ -n "$edit_start_range" ]]; then
+    start_lo="${edit_start_range%-*}"
+    start_hi="${edit_start_range#*-}"
+    if [[ "$start_lo" == "$start_hi" || -z "$start_lo" || -z "$start_hi" ]]; then
+      echo "rooster edit: --start-random expects HH:MM-HH:MM" >&2; exit 2
+    fi
+    lo_s=$(_hhmm_to_seconds "$start_lo")
+    hi_s=$(_hhmm_to_seconds "$start_hi")
+    range=$(( hi_s - lo_s ))
+    if (( range <= 0 )); then
+      echo "rooster edit: --start-random range must be positive" >&2; exit 2
+    fi
+    pick=$(( lo_s + RANDOM % range ))
+    edit_start=$(printf "%02d:%02d" $(( pick / 3600 )) $(( pick / 60 % 60 )))
+  fi
+
+  # Resolve the end. Open entries (cur_end_iso empty) need an explicit --end.
+  if [[ -z "$edit_end" ]]; then
+    if [[ -z "$cur_end_iso" ]]; then
+      echo "rooster edit: entry $edit_id is open (no end). Pass --end HH:MM" >&2
+      echo "  or close it first via clock-out, then re-run." >&2
+      exit 1
+    fi
+    edit_end=$(iso_to_local_hhmm "$cur_end_iso")
+  fi
+
+  echo "· editing entry ${edit_id}: start=${edit_start} end=${edit_end} (was start=$(iso_to_local_hhmm "$cur_start_iso") end=$(iso_to_local_hhmm "${cur_end_iso:-—}"))"
+
+  if [[ "${DRY_RUN:-0}" == "1" ]]; then
+    log_event dry_run edit entry_id="$edit_id" new_start="$edit_start" new_end="$edit_end"
+    echo "· DRY RUN — no API call made"
+    exit 0
+  fi
+
+  if bamboo_update_clock_entry "$edit_id" "$employee_id" "$entry_date" "$edit_start" "$edit_end"; then
+    log_event success edit entry_id="$edit_id" new_start="$edit_start" new_end="$edit_end" http_status="$(bamboo_last_status)"
+    echo "✓ entry ${edit_id} now start=${edit_start} end=${edit_end}"
+    exit 0
+  else
+    log_event failed edit entry_id="$edit_id" http_status="$(bamboo_last_status)"
+    echo "✗ edit failed (HTTP $(bamboo_last_status))" >&2
+    exit 1
+  fi
+fi
 
 if [[ "${1:-}" == "--auth-check" ]]; then
   PHASE=auth-check
