@@ -79,13 +79,17 @@ _epoch_hhmmss() {
   fi
 }
 
-# ISO 8601 UTC string → local HH:MM:SS, portably.
+# ISO 8601 → local HH:MM:SS. Accepts both UTC ("…Z") and local-with-offset
+# ("…+02:00") shapes. Returns the input untouched on parse failure.
 _iso_utc_to_local_hhmmss() {
   local iso="$1" e
   if date --version >/dev/null 2>&1; then
-    e=$(date -d "$iso" +%s)
+    e=$(date -d "$iso" +%s 2>/dev/null) || { echo "$iso"; return; }
   else
-    e=$(date -j -u -f "%Y-%m-%dT%H:%M:%SZ" "$iso" +%s 2>/dev/null) || echo "$iso"
+    # BSD date can't read "+02:00" — strip the colon and rewrite Z → +0000.
+    local cleaned
+    cleaned=$(echo "$iso" | sed -E 's/([+-][0-9]{2}):([0-9]{2})$/\1\2/' | sed 's/Z$/+0000/')
+    e=$(date -j -f "%Y-%m-%dT%H:%M:%S%z" "$cleaned" +%s 2>/dev/null) || { echo "$iso"; return; }
   fi
   _epoch_hhmmss "$e"
 }

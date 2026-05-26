@@ -204,7 +204,7 @@ if (( window_size <= 0 )); then
 else
   target_epoch=$(( window_start_epoch + RANDOM % window_size ))
 fi
-target_iso=$(epoch_to_iso_utc "$target_epoch")
+target_iso=$(epoch_to_iso_local "$target_epoch")
 
 now_epoch=$(date +%s)
 if (( target_epoch > now_epoch )); then

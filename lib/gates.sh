@@ -259,14 +259,20 @@ window_size_seconds() {
   echo $(( e - s ))
 }
 
-# Portable epoch → ISO 8601 UTC ("2026-05-26T08:53:14Z").
-epoch_to_iso_utc() {
-  local e="$1"
+# Portable epoch → ISO 8601 LOCAL with offset ("2026-05-26T10:53:14+02:00").
+# We send local-with-offset to BambooHR rather than UTC because their UI
+# displays the wire timestamp literally — sending Z makes the dashboard
+# show UTC times instead of the user's local clock.
+epoch_to_iso_local() {
+  local e="$1" raw
   if date --version >/dev/null 2>&1; then
-    date -u -d "@$e" +%Y-%m-%dT%H:%M:%SZ
+    raw=$(date -d "@$e" +%Y-%m-%dT%H:%M:%S%:z)
   else
-    date -u -r "$e" +%Y-%m-%dT%H:%M:%SZ
+    # BSD date has no %:z — produce "+0200" and inject the colon.
+    raw=$(date -r "$e" +%Y-%m-%dT%H:%M:%S%z)
+    raw=$(echo "$raw" | sed -E 's/([+-][0-9]{2})([0-9]{2})$/\1:\2/')
   fi
+  echo "$raw"
 }
 
 # BambooHR timestamps ("2026-05-22T07:15:00+00:00") → local "HH:MM".
