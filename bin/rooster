@@ -178,33 +178,50 @@ if already_clocked_for_phase "$employee_id" "$PHASE" "$today"; then
   exit 0
 fi
 
-# --- Random offset within window -----------------------------------------
+# --- Pick a random target time INSIDE today's phase window --------------
+# Absolute-time target — not "now + offset". Same target whether invoked
+# by launchd at 08:30 (we'll sleep until target), inside the window (short
+# sleep), or after the window has closed (sleep 0, BambooHR clock event
+# is backdated to the target via clockInTime).
 
-if ! window_size=$(window_size_seconds "$PHASE"); then
+if ! window_bounds=$(window_bounds_today "$PHASE"); then
   log_event failed "$PHASE" reason=missing-window
   exit 1
 fi
+read -r window_start_epoch window_end_epoch <<<"$window_bounds"
+window_size=$(( window_end_epoch - window_start_epoch ))
 
 if (( window_size <= 0 )); then
-  offset=0
+  target_epoch="$window_start_epoch"
 else
-  offset=$(( RANDOM % window_size ))
+  target_epoch=$(( window_start_epoch + RANDOM % window_size ))
+fi
+target_iso=$(epoch_to_iso_utc "$target_epoch")
+
+now_epoch=$(date +%s)
+if (( target_epoch > now_epoch )); then
+  sleep_seconds=$(( target_epoch - now_epoch ))
+else
+  sleep_seconds=0
 fi
 
-log_event planned "$PHASE" offset_seconds="$offset" window_size_seconds="$window_size"
+log_event planned "$PHASE" \
+  target_iso="$target_iso" \
+  sleep_seconds="$sleep_seconds" \
+  window_size_seconds="$window_size"
 
 if [[ "$DRY_RUN" == "1" ]]; then
   log_event dry_run "$PHASE" \
-    would_sleep_seconds="$offset" \
+    target_iso="$target_iso" \
+    sleep_seconds="$sleep_seconds" \
     would_action="$(action_for_phase "$PHASE")"
   exit 0
 fi
 
-sleep "$offset"
+sleep "$sleep_seconds"
 
-# Recompute today after the sleep — defensive against a late-window fire
-# crossing local midnight (windows max out at 18:30 + 60min today, so in
-# practice this never crosses, but the assert is cheap).
+# Recompute today after the sleep — defensive against late fires crossing
+# local midnight (windows max out at 18:30 + 60min so in practice never).
 today=$(date +%F)
 
 # --- Re-check gates 3 + 4 after sleeping ----------------------------------
@@ -222,18 +239,18 @@ fi
 
 case "$(action_for_phase "$PHASE")" in
   clock_in)
-    if bamboo_clock_in "$employee_id"; then
-      log_event success "$PHASE" action=clock_in http_status="$(bamboo_last_status)"
+    if bamboo_clock_in "$employee_id" "$target_iso"; then
+      log_event success "$PHASE" action=clock_in target_iso="$target_iso" http_status="$(bamboo_last_status)"
     else
-      log_event failed "$PHASE" action=clock_in http_status="$(bamboo_last_status)"
+      log_event failed "$PHASE" action=clock_in target_iso="$target_iso" http_status="$(bamboo_last_status)"
       exit 1
     fi
     ;;
   clock_out)
-    if bamboo_clock_out "$employee_id"; then
-      log_event success "$PHASE" action=clock_out http_status="$(bamboo_last_status)"
+    if bamboo_clock_out "$employee_id" "$target_iso"; then
+      log_event success "$PHASE" action=clock_out target_iso="$target_iso" http_status="$(bamboo_last_status)"
     else
-      log_event failed "$PHASE" action=clock_out http_status="$(bamboo_last_status)"
+      log_event failed "$PHASE" action=clock_out target_iso="$target_iso" http_status="$(bamboo_last_status)"
       exit 1
     fi
     ;;

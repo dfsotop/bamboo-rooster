@@ -42,20 +42,19 @@ bamboo_get_timesheet_today() {
   bamboo_request GET "/time_tracking/timesheet_entries?employeeIds=${employee_id}&start=${today}&end=${today}"
 }
 
-# POST /time_tracking/employees/{id}/clock_in with current time in UTC.
-# Matches what the upstream MCP sends (ISO 8601 with Z).
+# POST /time_tracking/employees/{id}/clock_in with the supplied timestamp,
+# defaulting to "now" in UTC. Pass an explicit clock_time to backdate or
+# schedule into the window — BambooHR honours the clockInTime parameter.
 bamboo_clock_in() {
   local employee_id="$1"
-  local clock_time
-  clock_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  local clock_time="${2:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
   bamboo_request POST "/time_tracking/employees/${employee_id}/clock_in" \
     "{\"clockInTime\":\"${clock_time}\"}" >/dev/null
 }
 
 bamboo_clock_out() {
   local employee_id="$1"
-  local clock_time
-  clock_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  local clock_time="${2:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
   bamboo_request POST "/time_tracking/employees/${employee_id}/clock_out" \
     "{\"clockOutTime\":\"${clock_time}\"}" >/dev/null
 }

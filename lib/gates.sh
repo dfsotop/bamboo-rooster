@@ -171,15 +171,50 @@ already_clocked_for_phase() {
 
 # --- Window helpers -------------------------------------------------------
 
-# Returns the window size in seconds for the given phase.
-window_size_seconds() {
+# Window math is expressed in ABSOLUTE local-today epochs so that the
+# target clock time is always inside the configured window — regardless
+# of when the script was invoked. cron-fired at 08:30 and `rooster morning`
+# manually fired at 10:30 both target the same 08:30–09:30 window;
+# manual fires past the window backdate via clockInTime.
+
+# Today's local-midnight as an epoch.
+today_midnight_epoch() {
+  local today; today=$(date +%F)
+  if date --version >/dev/null 2>&1; then
+    date -d "${today} 00:00:00" +%s
+  else
+    date -j -f "%Y-%m-%d %H:%M:%S" "${today} 00:00:00" +%s
+  fi
+}
+
+# Returns "<start_epoch> <end_epoch>" for the phase's window today.
+window_bounds_today() {
   : "${WINDOWS_CONF:?WINDOWS_CONF must be set}"
   local phase="$1"
   local line start end
   line=$(grep -E "^${phase}[[:space:]]" "$WINDOWS_CONF") \
     || { echo "rooster: no window for phase '$phase' in $WINDOWS_CONF" >&2; return 1; }
   read -r _ start end <<<"$line"
-  echo $(( $(_hhmm_to_seconds "$end") - $(_hhmm_to_seconds "$start") ))
+  local midnight; midnight=$(today_midnight_epoch)
+  echo "$(( midnight + $(_hhmm_to_seconds "$start") )) $(( midnight + $(_hhmm_to_seconds "$end") ))"
+}
+
+# Window size in seconds — kept for diagnostics in log lines.
+window_size_seconds() {
+  local phase="$1"
+  local bounds; bounds=$(window_bounds_today "$phase") || return 1
+  local s e; read -r s e <<<"$bounds"
+  echo $(( e - s ))
+}
+
+# Portable epoch → ISO 8601 UTC ("2026-05-26T08:53:14Z").
+epoch_to_iso_utc() {
+  local e="$1"
+  if date --version >/dev/null 2>&1; then
+    date -u -d "@$e" +%Y-%m-%dT%H:%M:%SZ
+  else
+    date -u -r "$e" +%Y-%m-%dT%H:%M:%SZ
+  fi
 }
 
 _hhmm_to_seconds() {
