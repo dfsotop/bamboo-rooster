@@ -128,45 +128,97 @@ already_clocked_for_phase() {
   local now_epoch
   now_epoch=$(date -u +%s)
 
-  # Each phase has a tight "proceed" condition; skip is "anything else".
-  # The function returns 0 when we should SKIP, 1 when we should proceed.
+  # Per-phase decision. When skipping, also echo ONE key=value pair that
+  # the caller can hand to log_event so the human line can say *why* (e.g.
+  # "already clocked in at 09:15" instead of just "already clocked").
+  local should_skip=1   # 1 = proceed (default), 0 = skip
+  local skip_kv=""
+
   case "$phase" in
     morning)
-      # Proceed iff there are zero entries of ANY kind today. Manual "hour"
-      # entries (entered via BambooHR's daily-hours UI rather than clock
-      # punches) have type != "clock" but still mean "user already logged
-      # time today" — skipping is correct.
-      [[ "$(echo "$response" | jq 'length')" -ge 1 ]]
+      # Skip iff any entry exists today (clock punch or hour entry).
+      if [[ "$(echo "$response" | jq 'length')" -ge 1 ]]; then
+        should_skip=0
+        local first_start
+        first_start=$(echo "$response" | jq -r '.[0].start // empty')
+        if [[ -n "$first_start" ]]; then
+          skip_kv="clocked_in_at=$(iso_to_local_hhmm "$first_start")"
+        fi
+      fi
       ;;
     lunch-out)
-      # Proceed iff there's exactly one open entry to close.
-      ! echo "$clock_entries" | jq -e \
-        'length == 1 and .[0].end == null' >/dev/null
+      # Skip unless there's exactly one open entry to close.
+      if ! echo "$clock_entries" | jq -e \
+            'length == 1 and .[0].end == null' >/dev/null; then
+        should_skip=0
+        local last_end count
+        last_end=$(echo "$clock_entries" | jq -r \
+          '[.[] | select(.end != null)] | last.end // empty')
+        count=$(echo "$clock_entries" | jq 'length')
+        if [[ -n "$last_end" ]]; then
+          skip_kv="last_clocked_out_at=$(iso_to_local_hhmm "$last_end")"
+        elif [[ "$count" == "0" ]]; then
+          skip_kv="no_clock_in_yet=today"
+        fi
+      fi
       ;;
     lunch-in)
-      # Proceed iff there's exactly one closed entry whose end was within
-      # the last 2 hours — i.e., we genuinely just clocked out for lunch.
-      # Excludes: 0 entries (no morning), >=2 entries (lunch-in already
-      # happened), open entry (still on morning clock), closed entry that
-      # ended too long ago (manual full-day entry, sick-day morning, etc.).
-      ! echo "$clock_entries" | jq -e --argjson now "$now_epoch" '
-        length == 1
-        and .[0].end != null
-        and (
-          ($now - (.[0].end | fromdateiso8601? // 0)) > 0
-          and ($now - (.[0].end | fromdateiso8601? // 0)) <= 7200
-        )
-      ' >/dev/null
+      # Skip unless there's exactly one closed entry whose end was within
+      # the last 2h — i.e., we genuinely just clocked out for lunch.
+      if ! echo "$clock_entries" | jq -e --argjson now "$now_epoch" '
+            length == 1
+            and .[0].end != null
+            and (
+              ($now - (.[0].end | fromdateiso8601? // 0)) > 0
+              and ($now - (.[0].end | fromdateiso8601? // 0)) <= 7200
+            )
+          ' >/dev/null; then
+        should_skip=0
+        local count open_start last_end
+        count=$(echo "$clock_entries" | jq 'length')
+        open_start=$(echo "$clock_entries" | jq -r \
+          '[.[] | select(.end == null)] | first.start // empty')
+        last_end=$(echo "$clock_entries" | jq -r \
+          '[.[] | select(.end != null)] | last.end // empty')
+        if [[ -n "$open_start" ]]; then
+          skip_kv="still_clocked_in_since=$(iso_to_local_hhmm "$open_start")"
+        elif [[ "$count" -ge 2 ]]; then
+          local latest_start
+          latest_start=$(echo "$clock_entries" | jq -r '.[-1].start // empty')
+          skip_kv="latest_session_started_at=$(iso_to_local_hhmm "$latest_start")"
+        elif [[ -n "$last_end" ]]; then
+          skip_kv="last_session_ended_at=$(iso_to_local_hhmm "$last_end")"
+        elif [[ "$count" == "0" ]]; then
+          skip_kv="no_clock_in_yet=today"
+        fi
+      fi
       ;;
     evening)
-      # Proceed iff at least one open entry exists to close.
-      ! echo "$clock_entries" | jq -e \
-        'map(select(.end == null)) | length > 0' >/dev/null
+      # Skip unless at least one open entry exists to close.
+      if ! echo "$clock_entries" | jq -e \
+            'map(select(.end == null)) | length > 0' >/dev/null; then
+        should_skip=0
+        local last_end count
+        last_end=$(echo "$clock_entries" | jq -r \
+          '[.[] | select(.end != null)] | last.end // empty')
+        count=$(echo "$clock_entries" | jq 'length')
+        if [[ -n "$last_end" ]]; then
+          skip_kv="last_clocked_out_at=$(iso_to_local_hhmm "$last_end")"
+        elif [[ "$count" == "0" ]]; then
+          skip_kv="no_clock_in_yet=today"
+        fi
+      fi
       ;;
     *)
       return 1
       ;;
   esac
+
+  if (( should_skip == 0 )); then
+    [[ -n "$skip_kv" ]] && echo "$skip_kv"
+    return 0
+  fi
+  return 1
 }
 
 # --- Window helpers -------------------------------------------------------
@@ -214,6 +266,23 @@ epoch_to_iso_utc() {
     date -u -d "@$e" +%Y-%m-%dT%H:%M:%SZ
   else
     date -u -r "$e" +%Y-%m-%dT%H:%M:%SZ
+  fi
+}
+
+# BambooHR timestamps ("2026-05-22T07:15:00+00:00") → local "HH:MM".
+# Returns the raw string on parse failure so the human log still says
+# *something* informative.
+iso_to_local_hhmm() {
+  local iso="$1" e
+  if date --version >/dev/null 2>&1; then
+    e=$(date -d "$iso" +%s 2>/dev/null) || { echo "$iso"; return; }
+    date -d "@$e" +%H:%M
+  else
+    # BSD date: strip the colon from ±HH:MM and rewrite Z → +0000.
+    local cleaned
+    cleaned=$(echo "$iso" | sed -E 's/([+-])([0-9]{2}):([0-9]{2})$/\1\2\3/' | sed 's/Z$/+0000/')
+    e=$(date -j -f "%Y-%m-%dT%H:%M:%S%z" "$cleaned" +%s 2>/dev/null) || { echo "$iso"; return; }
+    date -r "$e" +%H:%M
   fi
 }
 

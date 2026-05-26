@@ -173,8 +173,16 @@ fi
 
 # --- Gate 4: idempotency -------------------------------------------------
 
-if already_clocked_for_phase "$employee_id" "$PHASE" "$today"; then
-  log_event skipped "$PHASE" reason=already-clocked
+if skip_detail=$(already_clocked_for_phase "$employee_id" "$PHASE" "$today"); then
+  # already_clocked_for_phase optionally echoes one "key=value" pair
+  # describing what's blocking (e.g. clocked_in_at=09:15). Unquoted so it
+  # naturally becomes the kv arg to log_event when non-empty.
+  if [[ -n "$skip_detail" ]]; then
+    # shellcheck disable=SC2086
+    log_event skipped "$PHASE" reason=already-clocked $skip_detail
+  else
+    log_event skipped "$PHASE" reason=already-clocked
+  fi
   exit 0
 fi
 
@@ -230,8 +238,13 @@ if is_on_time_off_or_holiday "$employee_id" "$today" --force-refresh; then
   log_event skipped "$PHASE" reason=time-off-or-holiday-post-sleep
   exit 0
 fi
-if already_clocked_for_phase "$employee_id" "$PHASE" "$today"; then
-  log_event skipped "$PHASE" reason=already-clocked-post-sleep
+if skip_detail=$(already_clocked_for_phase "$employee_id" "$PHASE" "$today"); then
+  if [[ -n "$skip_detail" ]]; then
+    # shellcheck disable=SC2086
+    log_event skipped "$PHASE" reason=already-clocked-post-sleep $skip_detail
+  else
+    log_event skipped "$PHASE" reason=already-clocked-post-sleep
+  fi
   exit 0
 fi
 

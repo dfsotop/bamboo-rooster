@@ -141,8 +141,32 @@ _emit_human() {
       ;;
     skipped)
       local r; r=$(_kv reason "$@")
-      line=$(printf '· [%s] %s: skipped — %s' \
-             "$human_ts" "$phase" "$(_skip_reason_human "$r")")
+      case "$r" in
+        already-clocked|already-clocked-post-sleep)
+          # Detailed messages when gates.sh supplied a timestamp kv.
+          local in_at out_at still_in last_session latest_started no_in
+          in_at=$(_kv clocked_in_at "$@")
+          out_at=$(_kv last_clocked_out_at "$@")
+          still_in=$(_kv still_clocked_in_since "$@")
+          last_session=$(_kv last_session_ended_at "$@")
+          latest_started=$(_kv latest_session_started_at "$@")
+          no_in=$(_kv no_clock_in_yet "$@")
+          local suffix=""
+          [[ "$r" == "already-clocked-post-sleep" ]] && suffix=" (changed during sleep)"
+          if   [[ -n "$in_at" ]];          then line="· [${human_ts}] ${phase}: skipped — already clocked in at ${in_at}${suffix}"
+          elif [[ -n "$still_in" ]];       then line="· [${human_ts}] ${phase}: skipped — still clocked in since ${still_in} (no lunch break yet)${suffix}"
+          elif [[ -n "$latest_started" ]]; then line="· [${human_ts}] ${phase}: skipped — already had 2 sessions today (latest started ${latest_started})${suffix}"
+          elif [[ -n "$last_session" ]];   then line="· [${human_ts}] ${phase}: skipped — last session ended at ${last_session}, too long ago for a resume${suffix}"
+          elif [[ -n "$out_at" ]];         then line="· [${human_ts}] ${phase}: skipped — no open entry to close (last clocked out at ${out_at})${suffix}"
+          elif [[ -n "$no_in" ]];          then line="· [${human_ts}] ${phase}: skipped — no clock-in yet today${suffix}"
+          else                                  line="· [${human_ts}] ${phase}: skipped — $(_skip_reason_human "$r")"
+          fi
+          ;;
+        *)
+          line=$(printf '· [%s] %s: skipped — %s' \
+                 "$human_ts" "$phase" "$(_skip_reason_human "$r")")
+          ;;
+      esac
       ;;
     success)
       local status target_iso target_at
