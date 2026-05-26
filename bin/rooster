@@ -25,6 +25,56 @@ while [[ -L "$_self" ]]; do
 done
 ROOSTER_ROOT="${ROOSTER_ROOT:-$(cd "$(dirname "$_self")/.." && pwd)}"
 unset _self _target
+
+# --- Help (runnable without any config) -----------------------------------
+
+print_help() {
+  cat <<'EOF'
+rooster — randomized BambooHR clock-in/out
+
+Usage:
+  rooster <phase>          Run a phase. Gates run, random sleep within the
+                           phase window, then clock_in or clock_out.
+  rooster --auth-check     Live API round-trip; verifies the key works.
+                           Bypasses the cached employee ID.
+  rooster -h | --help      This help.
+
+Phases:
+  morning    clock in     window 08:30 – 09:30 (Mon–Fri)
+  lunch-out  clock out    window 12:45 – 13:15
+  lunch-in   clock in     window 13:30 – 14:00
+  evening    clock out    window 17:30 – 18:30
+
+Gates (each phase, before AND after the random sleep):
+  weekday  →  BambooHR /whos_out (PTO, sick, holiday, …)
+           →  idempotency against today's timesheet
+           →  random sleep
+           →  re-check whos_out + idempotency
+           →  clock_in / clock_out
+
+Files:
+  ~/.bamboo-rooster/.env             config (subdomain, employee ID, DRY_RUN)
+  ~/.bamboo-rooster/secrets/api-key  BambooHR API key (chmod 600)
+  ~/.bamboo-rooster/log.jsonl        structured event log
+  ~/.bamboo-rooster/state.json       caches (employee ID, whos_out, etc.)
+  ~/.bamboo-rooster/skip-today       touch to bow out for today (auto-clears)
+
+Related commands:
+  rooster-status                     7-day summary; flags missed phases
+  rooster-rotate-key                 interactively replace the API key
+  launchctl kickstart gui/$(id -u)/com.bamboo-rooster.<phase>
+                                     manually fire a scheduled launchd job
+
+Wiki: https://github.com/dfsotop/bamboo-rooster
+EOF
+}
+
+case "${1:-}" in
+  -h|--help|help)
+    print_help
+    exit 0
+    ;;
+esac
 ROOSTER_HOME="${ROOSTER_HOME:-${HOME}/.bamboo-rooster}"
 
 if [[ -f "$ROOSTER_HOME/.env" ]]; then
@@ -74,12 +124,17 @@ if [[ "${1:-}" == "--auth-check" ]]; then
   fi
 fi
 
-PHASE="${1:?usage: rooster <morning|lunch-out|lunch-in|evening>|--auth-check}"
+if [[ $# -lt 1 ]]; then
+  echo "rooster: missing phase. Try 'rooster --help'." >&2
+  exit 2
+fi
+
+PHASE="$1"
 export PHASE
 
 case "$PHASE" in
   morning|lunch-out|lunch-in|evening) : ;;
-  *) echo "rooster: unknown phase '$PHASE'" >&2; exit 2 ;;
+  *) echo "rooster: unknown phase '$PHASE'. Try 'rooster --help'." >&2; exit 2 ;;
 esac
 
 today=$(date +%F)

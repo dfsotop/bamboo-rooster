@@ -6,6 +6,26 @@
 
 set -euo pipefail
 
+case "${1:-}" in
+  -h|--help|help)
+    cat <<'EOF'
+rooster-status — last 7 days of rooster events
+
+Usage:
+  rooster-status            Print one section per day (Mon–Sun), showing the
+                            final event for each phase on that day. Workday
+                            phases with no event are flagged "⚠ MISSED".
+                            Auth / API / failure events from the last 7 days
+                            are appended at the bottom.
+  rooster-status -h|--help  This help.
+
+The view aggregates from ~/.bamboo-rooster/log.jsonl. "Missed" usually means
+the laptop was off / asleep when launchd should have fired.
+EOF
+    exit 0
+    ;;
+esac
+
 ROOSTER_HOME="${ROOSTER_HOME:-${HOME}/.bamboo-rooster}"
 LOG_FILE="${ROOSTER_LOG_FILE:-$ROOSTER_HOME/log.jsonl}"
 

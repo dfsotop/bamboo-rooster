@@ -18,6 +18,26 @@ while [[ -L "$_self" ]]; do
 done
 ROOSTER_ROOT="${ROOSTER_ROOT:-$(cd "$(dirname "$_self")/.." && pwd)}"
 unset _self _target
+
+case "${1:-}" in
+  -h|--help|help)
+    cat <<'EOF'
+rooster-rotate-key — replace the BambooHR API key
+
+Usage:
+  rooster-rotate-key            Prompt for a new key (no echo), validate it
+                                against /employees/0/?fields=id, and write
+                                ~/.bamboo-rooster/secrets/api-key only on
+                                success. The next launchd fire uses the new
+                                key — no restart, no reload.
+  rooster-rotate-key -h|--help  This help.
+
+Generate a fresh key at:
+  https://<your-subdomain>.bamboohr.com/settings/api.php
+EOF
+    exit 0
+    ;;
+esac
 ROOSTER_HOME="${ROOSTER_HOME:-${HOME}/.bamboo-rooster}"
 
 if [[ -f "$ROOSTER_HOME/.env" ]]; then
