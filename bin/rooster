@@ -92,7 +92,16 @@ export STATE_FILE="${STATE_FILE:-$ROOSTER_HOME/state.json}"
 export ROOSTER_LOG_FILE="${ROOSTER_LOG_FILE:-$ROOSTER_HOME/log.jsonl}"
 export SKIP_TODAY_FILE="${SKIP_TODAY_FILE:-$ROOSTER_HOME/skip-today}"
 export ROOSTER_API_KEY_FILE="${ROOSTER_API_KEY_FILE:-$ROOSTER_HOME/secrets/api-key}"
-export WINDOWS_CONF="${WINDOWS_CONF:-$ROOSTER_ROOT/config/windows.conf}"
+# Prefer the user-customized windows.conf (written once by install.sh) over
+# the repo default. Both files share the same format.
+if [[ -z "${WINDOWS_CONF:-}" ]]; then
+  if [[ -f "$ROOSTER_HOME/windows.conf" ]]; then
+    WINDOWS_CONF="$ROOSTER_HOME/windows.conf"
+  else
+    WINDOWS_CONF="$ROOSTER_ROOT/config/windows.conf"
+  fi
+fi
+export WINDOWS_CONF
 
 mkdir -p "$ROOSTER_HOME"
 

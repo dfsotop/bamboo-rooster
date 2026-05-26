@@ -21,9 +21,12 @@ The script will:
 2. Optionally prompt for **employee ID** (blank = auto-resolve at runtime).
 3. Ask whether to start in `DRY_RUN=1` mode (default yes — safe first-run behavior).
 4. Prompt for your **BambooHR API key** (no echo) and save to `~/.bamboo-rooster/secrets/api-key` (chmod 600).
-5. Force a live API round-trip to verify the key works (not a cache lookup).
-6. Generate four launchd plists under `~/Library/LaunchAgents/com.bamboo-rooster.<phase>.plist` and validate each with `plutil -lint`.
-7. Load them via `launchctl bootstrap`. Re-running cleanly unloads and re-loads — no duplication.
+5. Prompt **once** for your three time-ranges (morning, lunch, evening) and persist them to `~/.bamboo-rooster/windows.conf`. The lunch envelope is automatically split into lunch-out + lunch-in halves with a 15-min gap.
+6. Force a live API round-trip to verify the key works (not a cache lookup).
+7. Generate four launchd plists under `~/Library/LaunchAgents/com.bamboo-rooster.<phase>.plist` and validate each with `plutil -lint`.
+8. Load them via `launchctl bootstrap`. Re-running cleanly unloads and re-loads — no duplication.
+
+To re-configure the time-ranges later: `rm ~/.bamboo-rooster/windows.conf && ./install.sh`. The other config (subdomain, key) is kept; you'll only be re-prompted for the windows.
 
 Why launchd instead of cron: launchd re-fires missed jobs after the laptop wakes; macOS `cron` silently drops them.
 
