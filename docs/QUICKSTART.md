@@ -1,24 +1,24 @@
-# 🐓 bamboo-rooster — quick start
+# 🐓 bamboo-rooster — quickstart
 
-Five minutes. macOS only. No prior coding experience needed.
+Five minutes. macOS.
 
 ## What this does
 
-Clocks you in and out of BambooHR four times a workday (morning, lunch out, lunch back in, evening) at randomized minutes inside windows you choose. Skips weekends, holidays, and any approved PTO / sick day automatically. Runs in the background — you don't need to do anything once it's set up.
+Clocks you in and out of BambooHR four times a workday (morning, lunch out, lunch back in, evening) at randomized minutes inside windows you choose. Skips weekends, holidays, and any approved PTO / sick day automatically. Runs in the background — nothing to do once it's set up.
 
-## What you need
+## Requirements
 
-- A Mac (any model, Intel or Apple Silicon)
-- Your BambooHR login
-- Permission to create an API key (most accounts have it — if you don't see "API Keys" in your profile dropdown, ask HR)
+- A Mac (Intel or Apple Silicon)
+- A BambooHR account
+- Permission to create an API key (most accounts have it — if "API Keys" isn't in your profile dropdown, ask an admin)
 
 ---
 
 ## 1. Open Terminal
 
-Press **⌘ Space** to open Spotlight, type `Terminal`, press Enter. A black or white window opens with a cursor.
+Press **⌘ Space**, type `Terminal`, press Enter.
 
-## 2. Paste this one line, press Enter
+## 2. Run the bootstrap
 
 ```bash
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/dfsotop/bamboo-rooster/main/setup.sh)"

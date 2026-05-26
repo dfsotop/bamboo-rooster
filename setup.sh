@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # setup.sh — one-line bootstrap for bamboo-rooster on macOS.
 #
-# Designed to be safe to run via curl | bash:
+# Safe to run via curl | bash:
 #   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/dfsotop/bamboo-rooster/main/setup.sh)"
 #
-# What it does (idempotent — re-running updates an existing install):
+# Idempotent — re-running updates an existing install. Steps:
 #   1. Verify macOS.
 #   2. Install Xcode Command Line Tools if `git` is missing.
 #   3. Install Homebrew if missing, then `brew install jq`.
