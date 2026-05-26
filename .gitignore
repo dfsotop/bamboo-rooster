@@ -8,6 +8,8 @@ log.jsonl
 cron.err
 launchd.out
 launchd.err
+systemd.out
+systemd.err
 skip-today
 secrets/
 

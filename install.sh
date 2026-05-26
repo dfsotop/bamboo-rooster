@@ -1,33 +1,91 @@
 #!/usr/bin/env bash
-# install.sh — single-command setup for bamboo-rooster on macOS.
-# Schedules the four phases via launchd (re-fires after laptop wake,
-# unlike cron). Idempotent: re-running re-loads jobs without duplicating.
+# install.sh — cross-OS setup for bamboo-rooster.
+# Dispatches to install/launchd.sh on macOS or install/systemd.sh on Linux.
+# Idempotent: re-running re-installs scheduler units without duplicating.
 #
 # Time-off / sick / holiday handling is built in — lib/gates.sh queries
 # BambooHR's /time_off/whos_out before and after the random sleep on every
 # phase. Any approved time-off entry (vacation, sick, doctor, parental,
 # bereavement, …) or company holiday for today causes the phase to skip.
-# Nothing to configure here.
 
 set -euo pipefail
 
 ROOSTER_ROOT="$(cd "$(dirname "$0")" && pwd)"
 ROOSTER_HOME="${ROOSTER_HOME:-$HOME/.bamboo-rooster}"
-LAUNCHD_DIR="$HOME/Library/LaunchAgents"
-LABEL_PREFIX="com.bamboo-rooster"
-UID_NUM=$(id -u)
+
+# --- OS detection --------------------------------------------------------
+OS_KERNEL="$(uname -s)"
+case "$OS_KERNEL" in
+  Darwin) PLATFORM="launchd" ;;
+  Linux)  PLATFORM="systemd" ;;
+  *)
+    echo "unsupported OS: $OS_KERNEL" >&2
+    echo "supported: macOS (launchd) and Linux (systemd)." >&2
+    echo "Linux users without systemd: see docker/ for a containerized install." >&2
+    exit 1
+    ;;
+esac
 
 step() { printf '\n[install] %s\n' "$*"; }
 
+# Suggest the right package-manager invocation for missing deps.
+suggest_install() {
+  local pkgs="$*"
+  case "$OS_KERNEL" in
+    Darwin) echo "brew install $pkgs" ;;
+    Linux)
+      if   command -v apt-get >/dev/null 2>&1; then echo "sudo apt-get install -y $pkgs"
+      elif command -v dnf     >/dev/null 2>&1; then echo "sudo dnf install -y $pkgs"
+      elif command -v pacman  >/dev/null 2>&1; then echo "sudo pacman -S --noconfirm $pkgs"
+      elif command -v zypper  >/dev/null 2>&1; then echo "sudo zypper install -y $pkgs"
+      elif command -v apk     >/dev/null 2>&1; then echo "sudo apk add $pkgs"
+      else echo "install $pkgs via your package manager"
+      fi
+      ;;
+    *) echo "install $pkgs via your package manager" ;;
+  esac
+}
+
+# Best-effort detection of the host timezone — used as the default in the
+# interactive prompt below. Works on macOS and most modern Linux distros.
+detect_tz() {
+  if [[ -L /etc/localtime ]]; then
+    readlink /etc/localtime | sed 's|.*/zoneinfo/||'
+  elif [[ -f /etc/timezone ]]; then
+    tr -d '\n' < /etc/timezone
+  else
+    echo "UTC"
+  fi
+}
+
 # --- 1. host tools --------------------------------------------------------
-step "checking host tools"
+step "checking host tools (OS=$OS_KERNEL, scheduler=$PLATFORM)"
 missing=()
-for bin in jq curl launchctl plutil; do
+required=(jq curl)
+case "$PLATFORM" in
+  launchd) required+=(launchctl plutil) ;;
+  systemd) required+=(systemctl loginctl) ;;
+esac
+for bin in "${required[@]}"; do
   command -v "$bin" >/dev/null 2>&1 || missing+=("$bin")
 done
 if (( ${#missing[@]} > 0 )); then
   echo "missing: ${missing[*]}" >&2
-  echo "install via: brew install ${missing[*]}" >&2
+  # Only suggest installable packages (skip system binaries like launchctl).
+  installable=()
+  for m in "${missing[@]}"; do
+    case "$m" in jq|curl) installable+=("$m") ;; esac
+  done
+  if (( ${#installable[@]} > 0 )); then
+    echo "$(suggest_install "${installable[@]}")" >&2
+  fi
+  # System binaries
+  for m in "${missing[@]}"; do
+    case "$m" in
+      launchctl|plutil) echo "  $m is part of macOS — are you sure you're on Darwin?" >&2 ;;
+      systemctl|loginctl) echo "  $m is part of systemd — your distro may not use it; consider docker/" >&2 ;;
+    esac
+  done
   exit 1
 fi
 
@@ -37,23 +95,22 @@ mkdir -p "$ROOSTER_HOME/secrets"
 chmod 700 "$ROOSTER_HOME" "$ROOSTER_HOME/secrets"
 
 # --- 3. config: BambooHR subdomain ----------------------------------------
-# Prompt only for what's missing. Re-runs with config already on disk are
-# silent here and jump straight to the auth check.
 if [[ ! -f "$ROOSTER_HOME/.env" ]]; then
   step "first-time setup — collecting config"
 
-  # Subdomain. Required. No sensible default.
   subdomain=""
   while [[ -z "$subdomain" ]]; do
     read -r -p "BambooHR subdomain (the prefix in <x>.bamboohr.com): " subdomain
-    subdomain="${subdomain// /}"   # strip any pasted whitespace
+    subdomain="${subdomain// /}"
   done
 
-  # Optional: pin a specific employee ID. Empty means auto-resolve at runtime.
   read -r -p "BambooHR employee ID [leave blank to auto-resolve]: " employee_id || true
   employee_id="${employee_id// /}"
 
-  # DRY_RUN default = 1 (safe). User confirms with [Y/n].
+  detected_tz=$(detect_tz)
+  read -r -p "Timezone [$detected_tz]: " tz
+  tz="${tz:-$detected_tz}"
+
   read -r -p "Start in DRY_RUN mode (gates run, no real clock_in/out)? [Y/n] " dry_run_yn
   case "${dry_run_yn:-y}" in
     n|N|no|NO) dry_run="0" ;;
@@ -65,7 +122,7 @@ if [[ ! -f "$ROOSTER_HOME/.env" ]]; then
 # Written by install.sh on $(date)
 BAMBOOHR_SUBDOMAIN="${subdomain}"
 BAMBOOHR_EMPLOYEE_ID="${employee_id}"
-TZ="Europe/Madrid"
+TZ="${tz}"
 ROOSTER_AUTH_FAIL_LOG_COOLDOWN_HOURS="6"
 ROOSTER_WHOS_OUT_CACHE_TTL_SECONDS="1800"
 DRY_RUN="${dry_run}"
@@ -91,13 +148,7 @@ if [[ ! -s "$ROOSTER_HOME/secrets/api-key" ]]; then
 fi
 
 # --- 5. configure phase windows ------------------------------------------
-# User answers three ranges once; the script splits the lunch envelope into
-# the lunch-out and lunch-in sub-windows with a 15-min minimum gap. The
-# result is written to ~/.bamboo-rooster/windows.conf and used both by the
-# rooster script at runtime and by the launchd plists generated below.
-
 _prompt_hhmm() {
-  # $1=prompt text, $2=default. Re-asks until valid HH:MM.
   local prompt="$1" default="$2" answer
   while :; do
     read -r -p "$prompt [$default]: " answer
@@ -127,7 +178,6 @@ if [[ ! -f "$ROOSTER_HOME/windows.conf" ]]; then
   evening_start=$(_prompt_hhmm "  earliest" "17:30")
   evening_end=$(_prompt_hhmm   "  latest  " "18:30")
 
-  # Validate ordering and lunch envelope size.
   if (( $(_hhmm_to_min "$morning_end") <= $(_hhmm_to_min "$morning_start") )); then
     echo "morning end must be > start" >&2; exit 1
   fi
@@ -139,7 +189,6 @@ if [[ ! -f "$ROOSTER_HOME/windows.conf" ]]; then
     echo "lunch envelope must be ≥ 30 min (got $lunch_total)" >&2; exit 1
   fi
 
-  # Split lunch envelope: equal halves either side of a 15-min center gap.
   gap=15
   side=$(( (lunch_total - gap) / 2 ))
   lunch_out_start="$lunch_start"
@@ -150,7 +199,7 @@ if [[ ! -f "$ROOSTER_HOME/windows.conf" ]]; then
   umask 077
   cat > "$ROOSTER_HOME/windows.conf" <<EOF
 # Generated by install.sh on $(date)
-# Edit and re-run install.sh to regenerate the launchd plists.
+# Edit and re-run install.sh to regenerate the scheduler units.
 morning    $morning_start $morning_end
 lunch-out  $lunch_out_start $lunch_out_end
 lunch-in   $lunch_in_start $lunch_in_end
@@ -159,7 +208,7 @@ EOF
   echo "  ✓ wrote $ROOSTER_HOME/windows.conf"
 fi
 
-# Read final windows back so step 6 (plists) can pick up the times below.
+# Read final windows back so the scheduler installer can pick up the times.
 read -r _ morning_start morning_end \
   < <(grep -E '^morning[[:space:]]'    "$ROOSTER_HOME/windows.conf")
 read -r _ lunch_out_start lunch_out_end \
@@ -181,85 +230,12 @@ EOF
   exit 1
 fi
 
-# --- 7. generate plists ---------------------------------------------------
-step "writing launchd plists into $LAUNCHD_DIR"
-mkdir -p "$LAUNCHD_DIR"
+# --- 7. install platform-specific scheduler ------------------------------
+# shellcheck disable=SC1090
+source "$ROOSTER_ROOT/install/${PLATFORM}.sh"
+install_scheduler
 
-# Detect Homebrew prefix so jq/curl are findable from launchd's minimal PATH.
-brew_bin=""
-if command -v brew >/dev/null 2>&1; then
-  brew_bin="$(brew --prefix)/bin"
-fi
-launchd_path="${brew_bin}${brew_bin:+:}/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
-
-write_plist() {
-  local phase="$1" hour="$2" minute="$3"
-  local label="${LABEL_PREFIX}.${phase}"
-  local plist="$LAUNCHD_DIR/${label}.plist"
-  cat > "$plist" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>${label}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>${ROOSTER_ROOT}/bin/rooster</string>
-    <string>${phase}</string>
-  </array>
-  <key>StartCalendarInterval</key>
-  <array>
-    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>${hour}</integer><key>Minute</key><integer>${minute}</integer></dict>
-    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>${hour}</integer><key>Minute</key><integer>${minute}</integer></dict>
-    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>${hour}</integer><key>Minute</key><integer>${minute}</integer></dict>
-    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>${hour}</integer><key>Minute</key><integer>${minute}</integer></dict>
-    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>${hour}</integer><key>Minute</key><integer>${minute}</integer></dict>
-  </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PATH</key><string>${launchd_path}</string>
-    <key>HOME</key><string>${HOME}</string>
-  </dict>
-  <key>StandardOutPath</key><string>${ROOSTER_HOME}/launchd.out</string>
-  <key>StandardErrorPath</key><string>${ROOSTER_HOME}/launchd.err</string>
-  <key>RunAtLoad</key><false/>
-  <key>KeepAlive</key><false/>
-</dict>
-</plist>
-EOF
-  chmod 644 "$plist"
-  if ! plutil -lint "$plist" >/dev/null; then
-    echo "  ✗ invalid plist: $plist" >&2
-    exit 1
-  fi
-  echo "  ✓ $plist"
-}
-
-# Helper: strip leading zeros (plist <integer> doesn't allow them).
-_strip_zeros() { echo "$((10#$1))"; }
-
-write_plist morning   "$(_strip_zeros "${morning_start%:*}")"    "$(_strip_zeros "${morning_start#*:}")"
-write_plist lunch-out "$(_strip_zeros "${lunch_out_start%:*}")"  "$(_strip_zeros "${lunch_out_start#*:}")"
-write_plist lunch-in  "$(_strip_zeros "${lunch_in_start%:*}")"   "$(_strip_zeros "${lunch_in_start#*:}")"
-write_plist evening   "$(_strip_zeros "${evening_start%:*}")"    "$(_strip_zeros "${evening_start#*:}")"
-
-# --- 8. (re)load via launchctl -------------------------------------------
-step "loading launchd jobs"
-for phase in morning lunch-out lunch-in evening; do
-  label="${LABEL_PREFIX}.${phase}"
-  plist="$LAUNCHD_DIR/${label}.plist"
-  launchctl bootout "gui/${UID_NUM}/${label}" 2>/dev/null || true
-  launchctl bootstrap "gui/${UID_NUM}" "$plist"
-  launchctl enable "gui/${UID_NUM}/${label}" 2>/dev/null || true
-  echo "  ✓ loaded ${label}"
-done
-
-# --- 9. install CLI shortcuts on PATH -------------------------------------
-# Symlinks into ~/.local/bin so the user can type `rooster`, `rooster-status`,
-# `rooster-rotate-key` from anywhere. The source bin/ scripts stay in the repo;
-# launchd plists keep using the absolute path, so the symlinks only matter for
-# interactive use. `rotate-key` is renamed in the symlink to avoid collisions
-# with other tools using the generic name.
+# --- 8. install CLI shortcuts on PATH -------------------------------------
 step "installing CLI shortcuts into ~/.local/bin"
 mkdir -p "$HOME/.local/bin"
 ln -sf "$ROOSTER_ROOT/bin/rooster"        "$HOME/.local/bin/rooster"
@@ -268,42 +244,43 @@ ln -sf "$ROOSTER_ROOT/bin/rotate-key"     "$HOME/.local/bin/rooster-rotate-key"
 echo "  ✓ rooster, rooster-status, rooster-rotate-key linked"
 
 if ! echo ":$PATH:" | grep -q ":$HOME/.local/bin:"; then
+  rc_file="$HOME/.zshrc"
+  [[ -f "$HOME/.bashrc" && ! -f "$HOME/.zshrc" ]] && rc_file="$HOME/.bashrc"
   cat <<EOF
 
 ⚠  ~/.local/bin is not on your PATH. Add it:
-    echo 'export PATH="\$HOME/.local/bin:\$PATH"' >> ~/.zshrc
-    source ~/.zshrc
+    echo 'export PATH="\$HOME/.local/bin:\$PATH"' >> $rc_file
+    source $rc_file
 EOF
 fi
 
-# --- 10. summary ----------------------------------------------------------
+# --- 9. summary ----------------------------------------------------------
 step "active jobs"
-launchctl list | awk -v p="$LABEL_PREFIX" '$3 ~ p { printf "  %s\n", $3 }' || true
+scheduler_status_lines
 
 if grep -q '^DRY_RUN="\?1"\?' "$ROOSTER_HOME/.env"; then
   cat <<EOF
 
 ⚠  DRY_RUN=1 is still set in $ROOSTER_HOME/.env
    The four jobs are scheduled but will skip the actual clock_in/out HTTP
-   call. Watch the log for a few days, then flip DRY_RUN to "0" to go live:
-     sed -i.bak 's/^DRY_RUN=.*/DRY_RUN="0"/' $ROOSTER_HOME/.env
+   call. Watch the log for a few days, then flip DRY_RUN to "0" to go live.
 EOF
 fi
 
 cat <<EOF
 
-✓ rooster scheduled. Phases (local Madrid time, Mon–Fri):
-   morning   08:30 + random 0–60 min  → clock in
-   lunch-out 12:45 + random 0–30 min  → clock out
-   lunch-in  13:30 + random 0–30 min  → clock in
-   evening   17:30 + random 0–60 min  → clock out
+✓ rooster scheduled (scheduler: $PLATFORM). Phases (Mon–Fri, local TZ):
+   morning   ${morning_start} – ${morning_end}     → clock in
+   lunch-out ${lunch_out_start} – ${lunch_out_end}   → clock out
+   lunch-in  ${lunch_in_start} – ${lunch_in_end}    → clock in
+   evening   ${evening_start} – ${evening_end}     → clock out
 
 useful commands:
    tail -f $ROOSTER_HOME/log.jsonl
-   rooster-status                             # last 7 days summary
-   rooster --auth-check                       # live API key check
-   rooster-rotate-key                         # rotate a revoked key
-   touch $ROOSTER_HOME/skip-today             # bow out for today
-   launchctl kickstart gui/${UID_NUM}/${LABEL_PREFIX}.morning   # fire morning manually
-   $ROOSTER_ROOT/uninstall.sh                 # remove launchd jobs + CLI symlinks
+   rooster-status                          # last 7 days summary
+   rooster --auth-check                    # live API key check
+   rooster-rotate-key                      # rotate a revoked key
+   touch $ROOSTER_HOME/skip-today          # bow out for today
 EOF
+scheduler_useful_commands
+echo "   $ROOSTER_ROOT/uninstall.sh                # remove scheduler + CLI symlinks"

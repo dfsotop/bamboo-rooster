@@ -1,25 +1,28 @@
 #!/usr/bin/env bash
-# uninstall.sh — stop and remove the four launchd jobs.
-# Leaves $HOME/.bamboo-rooster (config, secrets, logs) intact so a future
-# install picks up where this one left off.
+# uninstall.sh — stop the scheduler and remove CLI symlinks.
+# Cross-OS: dispatches to install/launchd.sh on macOS or install/systemd.sh
+# on Linux. Leaves $HOME/.bamboo-rooster (config, secrets, logs) intact.
 
 set -euo pipefail
 
-LAUNCHD_DIR="$HOME/Library/LaunchAgents"
-LABEL_PREFIX="com.bamboo-rooster"
-UID_NUM=$(id -u)
+ROOSTER_ROOT="$(cd "$(dirname "$0")" && pwd)"
 ROOSTER_HOME="${ROOSTER_HOME:-$HOME/.bamboo-rooster}"
 
-for phase in morning lunch-out lunch-in evening; do
-  label="${LABEL_PREFIX}.${phase}"
-  plist="$LAUNCHD_DIR/${label}.plist"
-  launchctl bootout "gui/${UID_NUM}/${label}" 2>/dev/null || true
-  rm -f "$plist"
-  echo "✓ removed ${label}"
-done
+OS_KERNEL="$(uname -s)"
+case "$OS_KERNEL" in
+  Darwin) PLATFORM="launchd" ;;
+  Linux)  PLATFORM="systemd" ;;
+  *) echo "unsupported OS: $OS_KERNEL" >&2; exit 1 ;;
+esac
 
-# Remove the CLI symlinks installed by install.sh, but only if they really
-# are symlinks (defensive — don't clobber an unrelated file by the same name).
+step() { printf '\n[uninstall] %s\n' "$*"; }
+
+step "removing scheduler ($PLATFORM) units"
+# shellcheck disable=SC1090
+source "$ROOSTER_ROOT/install/${PLATFORM}.sh"
+uninstall_scheduler
+
+step "removing CLI symlinks"
 for name in rooster rooster-status rooster-rotate-key; do
   link="$HOME/.local/bin/$name"
   if [[ -L "$link" ]]; then
@@ -30,7 +33,7 @@ done
 
 cat <<EOF
 
-launchd jobs unloaded, plists removed, CLI symlinks cleared.
+scheduler jobs unloaded, CLI symlinks cleared.
 
 host state at $ROOSTER_HOME is intact. To also wipe config + secrets + logs:
   rm -rf "$ROOSTER_HOME"

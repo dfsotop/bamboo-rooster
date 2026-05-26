@@ -6,29 +6,50 @@ For the why and the design rationale, read [`wiki/README.md`](wiki/README.md) an
 
 ---
 
-## Quickstart (macOS)
+## Quickstart
 
-Single command — fully interactive on first run, idempotent on re-runs.
+`./install.sh` detects your OS and dispatches to the right scheduler — **launchd** on macOS, **systemd** user units on Linux. The interactive prompts are identical.
 
 ```bash
 ./install.sh
 ```
 
-Prerequisites: `brew install jq curl` (curl ships with macOS but verify with `command -v curl`).
+Prerequisites — both macOS and Linux need `jq` and `curl`; the installer suggests the right package-manager incantation for your platform if either is missing.
+
+- **macOS**: `brew install jq curl` (curl usually ships)
+- **Debian/Ubuntu**: `sudo apt-get install -y jq curl`
+- **Fedora/RHEL**: `sudo dnf install -y jq curl`
+- **Arch**: `sudo pacman -S --noconfirm jq curl`
+- **Alpine**: `sudo apk add jq curl`
 
 The script will:
 1. Prompt for your **BambooHR subdomain** (the prefix in `<x>.bamboohr.com`).
 2. Optionally prompt for **employee ID** (blank = auto-resolve at runtime).
-3. Ask whether to start in `DRY_RUN=1` mode (default yes — safe first-run behavior).
-4. Prompt for your **BambooHR API key** (no echo) and save to `~/.bamboo-rooster/secrets/api-key` (chmod 600).
-5. Prompt **once** for your three time-ranges (morning, lunch, evening) and persist them to `~/.bamboo-rooster/windows.conf`. The lunch envelope is automatically split into lunch-out + lunch-in halves with a 15-min gap.
-6. Force a live API round-trip to verify the key works (not a cache lookup).
-7. Generate four launchd plists under `~/Library/LaunchAgents/com.bamboo-rooster.<phase>.plist` and validate each with `plutil -lint`.
-8. Load them via `launchctl bootstrap`. Re-running cleanly unloads and re-loads — no duplication.
+3. Detect your **system timezone** and offer it as a prompt default.
+4. Ask whether to start in `DRY_RUN=1` mode (default yes — safe first-run behavior).
+5. Prompt for your **BambooHR API key** (no echo) and save to `~/.bamboo-rooster/secrets/api-key` (chmod 600).
+6. Prompt **once** for your three time-ranges (morning, lunch, evening) and persist them to `~/.bamboo-rooster/windows.conf`. The lunch envelope is auto-split into lunch-out + lunch-in halves with a 15-min gap.
+7. Force a live API round-trip to verify the key works.
+8. Generate the scheduler units:
+   - macOS → four launchd plists under `~/Library/LaunchAgents/com.bamboo-rooster.<phase>.plist`, validated with `plutil -lint`, loaded via `launchctl bootstrap`.
+   - Linux → four `.timer` + `.service` pairs under `~/.config/systemd/user/`, enabled via `systemctl --user enable --now`. Includes a `Persistent=true` so missed fires run after wake.
+9. Symlink the `rooster`, `rooster-status`, `rooster-rotate-key` commands into `~/.local/bin/` so they're on PATH.
 
-To re-configure the time-ranges later: `rm ~/.bamboo-rooster/windows.conf && ./install.sh`. The other config (subdomain, key) is kept; you'll only be re-prompted for the windows.
+To re-configure the time-ranges later: `rm ~/.bamboo-rooster/windows.conf && ./install.sh`. Other config is kept; you'll only be re-prompted for the windows.
 
-Why launchd instead of cron: launchd re-fires missed jobs after the laptop wakes; macOS `cron` silently drops them.
+### Linux: keeping it running when you log out
+
+systemd user services normally stop at log-out. For an always-on schedule:
+
+```bash
+sudo loginctl enable-linger $USER
+```
+
+The installer detects this state and prints a hint if lingering isn't enabled.
+
+### Why not plain cron
+
+Both launchd and systemd re-fire missed jobs on wake (launchd via `StartCalendarInterval`, systemd via `Persistent=true`). `cron` silently drops them.
 
 ---
 
@@ -54,7 +75,10 @@ rooster-rotate-key
 touch ~/.bamboo-rooster/skip-today
 
 # manually fire a phase
+#   macOS:
 launchctl kickstart "gui/$(id -u)/com.bamboo-rooster.morning"
+#   Linux:
+systemctl --user start bamboo-rooster-morning.service
 
 # remove the launchd jobs + CLI symlinks (keeps logs/config on disk)
 ./uninstall.sh
