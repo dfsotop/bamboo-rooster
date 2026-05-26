@@ -11,8 +11,20 @@
 set -euo pipefail
 
 # --- Bootstrap paths ------------------------------------------------------
-
-ROOSTER_ROOT="${ROOSTER_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+# Resolve $0 through symlinks portably so the same script works whether it
+# was invoked directly (./bin/rooster) or via a ~/.local/bin/rooster symlink.
+# BSD readlink has no -f and there's no portable realpath in macOS bash 3.2,
+# so we walk the chain by hand.
+_self="$0"
+while [[ -L "$_self" ]]; do
+  _target=$(readlink "$_self")
+  if [[ "$_target" != /* ]]; then
+    _target="$(dirname "$_self")/$_target"
+  fi
+  _self="$_target"
+done
+ROOSTER_ROOT="${ROOSTER_ROOT:-$(cd "$(dirname "$_self")/.." && pwd)}"
+unset _self _target
 ROOSTER_HOME="${ROOSTER_HOME:-${HOME}/.bamboo-rooster}"
 
 if [[ -f "$ROOSTER_HOME/.env" ]]; then
