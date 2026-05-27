@@ -161,3 +161,9 @@ State and secrets live OUTSIDE the repo at `~/.bamboo-rooster/` — never checke
 ## Future: Docker deploy
 
 The `docker/` directory + `compose.yaml` are kept as an alternative deployment for when the rooster moves off the laptop (always-on home server, NAS, VPS). Not part of `install.sh` — that's launchd-only on macOS. To use Docker: `docker compose up -d --build` after seeding `~/.bamboo-rooster/.env` and the api-key file manually.
+
+---
+
+## License
+
+[MIT](LICENSE). Use freely, fork freely, no warranty — see the disclaimer at the top.
