@@ -21,7 +21,7 @@ Type=oneshot
 Environment=ROOSTER_HOME=${ROOSTER_HOME}
 Environment=ROOSTER_ROOT=${ROOSTER_ROOT}
 Environment=HOME=${HOME}
-Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=PATH=${ROOSTER_HOME}/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=${ROOSTER_ROOT}/bin/rooster ${phase}
 StandardOutput=append:${ROOSTER_HOME}/systemd.out
 StandardError=append:${ROOSTER_HOME}/systemd.err

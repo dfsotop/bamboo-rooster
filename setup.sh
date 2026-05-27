@@ -75,12 +75,18 @@ EOF
 esac
 
 # --- 3. dependency summary + consent --------------------------------------
-# We deliberately avoid Xcode Command Line Tools — the only thing it provides
-# us is `git`, and we use a tarball download (curl + tar, both shipped with
-# macOS) instead. That saves the user a 1 GB install and a 5-min wait.
+# No Xcode CLT (we use curl + tar for the repo download). No Homebrew either:
+# the only thing it would install for us is jq, and jq publishes single-file
+# macOS binaries (~600 KB) we can download directly from its GitHub releases.
+JQ_VERSION="1.7.1"
+JQ_INSTALL_DIR="$HOME/.bamboo-rooster/bin"
+
 deps_missing=()
-command -v brew >/dev/null 2>&1 || deps_missing+=("Homebrew — the macOS package manager (run by its official installer)")
-command -v jq   >/dev/null 2>&1 || deps_missing+=("jq — small JSON parser the rooster uses (via Homebrew)")
+need_jq=0
+if ! command -v jq >/dev/null 2>&1; then
+  deps_missing+=("jq ${JQ_VERSION} — small JSON parser, ~600 KB, downloaded directly from github.com/jqlang/jq (no Homebrew required)")
+  need_jq=1
+fi
 
 if (( ${#deps_missing[@]} == 0 )); then
   ok "all dependencies present"
@@ -99,26 +105,29 @@ else
   esac
 fi
 
-# --- 4. Homebrew (for jq) -------------------------------------------------
-if ! command -v brew >/dev/null 2>&1; then
-  say "Installing Homebrew…"
-  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-  # Apple Silicon installs to /opt/homebrew; Intel to /usr/local. Make brew
-  # findable in THIS shell so the next step works without re-login.
-  if [[ -x /opt/homebrew/bin/brew ]]; then
-    eval "$(/opt/homebrew/bin/brew shellenv)"
-  elif [[ -x /usr/local/bin/brew ]]; then
-    eval "$(/usr/local/bin/brew shellenv)"
+# --- 4. jq (direct binary download) --------------------------------------
+if (( need_jq )); then
+  case "$(uname -m)" in
+    arm64)  jq_arch="arm64" ;;
+    x86_64) jq_arch="amd64" ;;
+    *) fail "unsupported CPU architecture: $(uname -m)" ;;
+  esac
+  jq_url="https://github.com/jqlang/jq/releases/download/jq-${JQ_VERSION}/jq-macos-${jq_arch}"
+  say "Downloading jq ${JQ_VERSION} (macOS ${jq_arch})…"
+  mkdir -p "$JQ_INSTALL_DIR"
+  chmod 700 "$HOME/.bamboo-rooster"
+  if ! curl -fsSL "$jq_url" -o "$JQ_INSTALL_DIR/jq"; then
+    fail "could not download jq from $jq_url"
   fi
+  chmod +x "$JQ_INSTALL_DIR/jq"
+  if ! "$JQ_INSTALL_DIR/jq" --version >/dev/null 2>&1; then
+    fail "downloaded jq doesn't run (file may be corrupted or arch wrong)"
+  fi
+  export PATH="$JQ_INSTALL_DIR:$PATH"
+  ok "jq installed at $JQ_INSTALL_DIR/jq"
 fi
 
-# --- 5. jq ----------------------------------------------------------------
-if ! command -v jq >/dev/null 2>&1; then
-  say "Installing jq…"
-  brew install jq
-fi
-
-# --- 6. fetch repo via tarball -------------------------------------------
+# --- 5. fetch repo via tarball -------------------------------------------
 # If the user has cloned the repo manually (so .git is present), respect
 # that and let them update via git themselves. Otherwise atomically replace
 # the install with the latest main branch tarball.
@@ -140,6 +149,6 @@ else
 fi
 ok "code ready at $INSTALL_DIR"
 
-# --- 7. hand off to install.sh -------------------------------------------
+# --- 6. hand off to install.sh -------------------------------------------
 say "Running setup wizard"
 exec "$INSTALL_DIR/install.sh"

@@ -27,6 +27,10 @@ EOF
 esac
 
 ROOSTER_HOME="${ROOSTER_HOME:-${HOME}/.bamboo-rooster}"
+# Pick up a bundled jq if setup.sh downloaded one.
+if [[ -d "$ROOSTER_HOME/bin" ]]; then
+  PATH="$ROOSTER_HOME/bin:$PATH"
+fi
 LOG_FILE="${ROOSTER_LOG_FILE:-$ROOSTER_HOME/log.jsonl}"
 
 if [[ ! -f "$LOG_FILE" ]]; then

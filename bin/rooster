@@ -88,6 +88,14 @@ fi
 
 export ROOSTER_HOME
 export ROOSTER_ROOT
+
+# A jq binary downloaded by setup.sh (when Homebrew is absent) lives under
+# $ROOSTER_HOME/bin. Make it discoverable via PATH so we don't need to teach
+# every jq call about a custom location.
+if [[ -d "$ROOSTER_HOME/bin" ]]; then
+  PATH="$ROOSTER_HOME/bin:$PATH"
+fi
+
 export STATE_FILE="${STATE_FILE:-$ROOSTER_HOME/state.json}"
 export ROOSTER_LOG_FILE="${ROOSTER_LOG_FILE:-$ROOSTER_HOME/log.jsonl}"
 export SKIP_TODAY_FILE="${SKIP_TODAY_FILE:-$ROOSTER_HOME/skip-today}"

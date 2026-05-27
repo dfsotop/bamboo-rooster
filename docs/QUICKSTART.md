@@ -45,9 +45,8 @@ What it does, in order:
 | Step | What happens |
 |---|---|
 | API key gate | Confirms you have a BambooHR API key before touching your system. |
-| Dependency check | Shows you what's about to be installed (Homebrew and/or `jq`) and asks once before touching anything. |
-| Homebrew | Installed only if you don't already have it. It'll ask for your Mac password to put files in `/opt/homebrew` or `/usr/local`. |
-| jq | A small JSON-parsing tool the rooster needs. Installs via Homebrew. |
+| Dependency check | Shows you what's about to be installed (just `jq`, if you don't have it) and asks once before touching anything. |
+| jq | A small ~600 KB JSON parser. Downloaded directly from jq's GitHub releases into `~/.bamboo-rooster/bin/jq` — **no Homebrew required**. |
 | Download | Fetches the bamboo-rooster files to `~/Applications/bamboo-rooster/` (curl + tar, no git needed). |
 | Wizard | The setup wizard starts and asks you questions. |
 

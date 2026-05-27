@@ -58,12 +58,15 @@ install_scheduler() {
   step "writing launchd plists into $LAUNCHD_DIR"
   mkdir -p "$LAUNCHD_DIR"
 
-  # Detect Homebrew prefix so jq/curl are findable from launchd's minimal PATH.
+  # Build PATH for launchd-fired jobs. Order:
+  #   1. $ROOSTER_HOME/bin — picks up a jq downloaded by setup.sh (no brew)
+  #   2. Homebrew prefix   — if user has brew + a system jq
+  #   3. /usr/local/bin /usr/bin /bin /sbin /usr/sbin — standard system paths
   local brew_bin=""
   if command -v brew >/dev/null 2>&1; then
     brew_bin="$(brew --prefix)/bin"
   fi
-  LAUNCHD_PATH="${brew_bin}${brew_bin:+:}/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
+  LAUNCHD_PATH="${ROOSTER_HOME}/bin:${brew_bin}${brew_bin:+:}/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
 
   _write_plist morning   "$(_strip_zeros "${morning_start%:*}")"    "$(_strip_zeros "${morning_start#*:}")"
   _write_plist lunch-out "$(_strip_zeros "${lunch_out_start%:*}")"  "$(_strip_zeros "${lunch_out_start#*:}")"
