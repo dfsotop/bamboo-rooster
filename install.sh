@@ -58,6 +58,41 @@ detect_tz() {
   fi
 }
 
+# --- 0. preflight: API key required --------------------------------------
+# When called by setup.sh, BAMBOO_ROOSTER_KEY_CONFIRMED is already set and
+# we skip this. When the user runs install.sh directly from a cloned repo,
+# we ask the same gate question setup.sh asks.
+if [[ -z "${BAMBOO_ROOSTER_KEY_CONFIRMED:-}" ]] \
+   && [[ ! -f "$ROOSTER_HOME/secrets/api-key" ]]; then
+  cat <<'EOF'
+
+This wizard configures bamboo-rooster. You'll need a BambooHR API key first.
+
+How to get one:
+  1. Log in to https://<your-subdomain>.bamboohr.com
+  2. Click your profile picture (top right) → "API Keys"
+  3. Click "Add New Key", give it a name (e.g. "bamboo-rooster")
+  4. Click "Generate Key" — COPY THE STRING NOW (it's only shown once)
+
+If "API Keys" isn't in your profile menu, ask your BambooHR admin to
+enable API key generation for your user (it's a 30-second toggle).
+
+EOF
+  if [[ ! -t 0 ]]; then
+    echo "non-interactive shell, can't prompt. Re-run in a Terminal window." >&2
+    exit 1
+  fi
+  read -r -p "Do you have your API key ready? [y/N] " key_ready </dev/tty
+  case "${key_ready:-n}" in
+    y|Y|yes|YES) export BAMBOO_ROOSTER_KEY_CONFIRMED=1 ;;
+    *)
+      echo
+      echo "Aborting. Get your API key first, then re-run ./install.sh."
+      exit 0
+      ;;
+  esac
+fi
+
 # --- 1. host tools --------------------------------------------------------
 step "checking host tools (OS=$OS_KERNEL, scheduler=$PLATFORM)"
 missing=()

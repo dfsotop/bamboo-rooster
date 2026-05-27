@@ -29,13 +29,52 @@ case "$(uname -s)" in
   Darwin) ;;
   Linux)
     warn "This bootstrap is macOS-only."
-    warn "Linux users:  git clone $REPO_URL && cd bamboo-rooster && ./install.sh"
+    warn "Linux users: download a tarball or 'git clone' the repo, then run ./install.sh"
     exit 1
     ;;
   *) fail "Unsupported OS: $(uname -s)" ;;
 esac
 
-# --- 2. dependency summary + consent --------------------------------------
+# --- 2. preflight: API key required --------------------------------------
+# Asked BEFORE any system change so we don't install brew/jq for someone
+# who can't actually use the tool. Exports BAMBOO_ROOSTER_KEY_CONFIRMED so
+# the install.sh wizard further down doesn't re-prompt for the same thing.
+cat <<'EOF'
+
+This installs bamboo-rooster, which clocks you in and out of BambooHR
+automatically. You'll need a BambooHR API key first.
+
+How to get one:
+  1. Log in to https://<your-subdomain>.bamboohr.com
+  2. Click your profile picture (top right) → "API Keys"
+  3. Click "Add New Key", give it a name (e.g. "bamboo-rooster")
+  4. Click "Generate Key" — COPY THE STRING NOW (it's only shown once)
+
+If "API Keys" isn't in your profile menu, ask your BambooHR admin to
+enable API key generation for your user (it's a 30-second toggle).
+
+EOF
+if [[ ! -t 0 ]]; then
+  fail "non-interactive shell, can't prompt. Re-run in a Terminal window."
+fi
+read -r -p "Do you have your API key ready? [y/N] " key_ready </dev/tty
+case "${key_ready:-n}" in
+  y|Y|yes|YES)
+    export BAMBOO_ROOSTER_KEY_CONFIRMED=1
+    ;;
+  *)
+    cat <<'EOF'
+
+Aborting. Get your API key first, then re-run the same setup command:
+
+  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/dfsotop/bamboo-rooster/main/setup.sh)"
+
+EOF
+    exit 0
+    ;;
+esac
+
+# --- 3. dependency summary + consent --------------------------------------
 # We deliberately avoid Xcode Command Line Tools — the only thing it provides
 # us is `git`, and we use a tarball download (curl + tar, both shipped with
 # macOS) instead. That saves the user a 1 GB install and a 5-min wait.
@@ -60,7 +99,7 @@ else
   esac
 fi
 
-# --- 3. Homebrew (for jq) -------------------------------------------------
+# --- 4. Homebrew (for jq) -------------------------------------------------
 if ! command -v brew >/dev/null 2>&1; then
   say "Installing Homebrew…"
   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
@@ -73,13 +112,13 @@ if ! command -v brew >/dev/null 2>&1; then
   fi
 fi
 
-# --- 4. jq ----------------------------------------------------------------
+# --- 5. jq ----------------------------------------------------------------
 if ! command -v jq >/dev/null 2>&1; then
   say "Installing jq…"
   brew install jq
 fi
 
-# --- 5. fetch repo via tarball -------------------------------------------
+# --- 6. fetch repo via tarball -------------------------------------------
 # If the user has cloned the repo manually (so .git is present), respect
 # that and let them update via git themselves. Otherwise atomically replace
 # the install with the latest main branch tarball.
@@ -101,6 +140,6 @@ else
 fi
 ok "code ready at $INSTALL_DIR"
 
-# --- 6. hand off to install.sh -------------------------------------------
+# --- 7. hand off to install.sh -------------------------------------------
 say "Running setup wizard"
 exec "$INSTALL_DIR/install.sh"

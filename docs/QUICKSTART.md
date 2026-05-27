@@ -14,27 +14,44 @@ Clocks you in and out of BambooHR four times a workday (morning, lunch out, lunc
 
 ---
 
-## 1. Open Terminal
+## 1. Get your BambooHR API key first
+
+The installer refuses to do anything until you confirm you have a key.
+Generate one now:
+
+1. Log in at `https://<your-subdomain>.bamboohr.com`
+2. Click your profile picture (top right) → **API Keys**
+3. Click **Add New Key**, give it a name (e.g. `bamboo-rooster`)
+4. Click **Generate Key**
+5. **Copy the long string immediately** — it's only displayed once
+
+If "API Keys" isn't in your profile menu, ask your BambooHR admin to enable
+API key generation for your user (it's a 30-second toggle on their side).
+
+## 2. Open Terminal
 
 Press **⌘ Space**, type `Terminal`, press Enter.
 
-## 2. Run the bootstrap
+## 3. Run the bootstrap
 
 ```bash
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/dfsotop/bamboo-rooster/main/setup.sh)"
 ```
 
+The installer asks first thing: **"Do you have your API key ready?"** — answer `y`.
+
 What it does, in order:
 
 | Step | What happens |
 |---|---|
+| API key gate | Confirms you have a BambooHR API key before touching your system. |
 | Dependency check | Shows you what's about to be installed (Homebrew and/or `jq`) and asks once before touching anything. |
 | Homebrew | Installed only if you don't already have it. It'll ask for your Mac password to put files in `/opt/homebrew` or `/usr/local`. |
 | jq | A small JSON-parsing tool the rooster needs. Installs via Homebrew. |
 | Download | Fetches the bamboo-rooster files to `~/Applications/bamboo-rooster/` (curl + tar, no git needed). |
 | Wizard | The setup wizard starts and asks you questions. |
 
-## 3. Answer the wizard
+## 4. Answer the wizard
 
 | Prompt | What to type |
 |---|---|
@@ -42,20 +59,8 @@ What it does, in order:
 | **Employee ID** | Press **Enter** to leave blank — it'll figure it out from your API key. |
 | **Timezone** | Press **Enter** to accept the detected default (your Mac's timezone). |
 | **DRY_RUN mode** | Press **Enter** (defaults to yes). This is "rehearsal mode" — the rooster will run the schedule but **not actually** clock you in/out. You'll switch this off in a few days once you've verified the schedule looks right. |
-| **API key** | See section 4 below. |
+| **API key** | Paste the key you copied in step 1 (it won't show on screen — that's normal). Press **Enter**. |
 | **Time windows** | When to clock in/out. Defaults: 08:30–09:30 morning, 12:45–14:00 lunch, 17:30–18:30 evening. Press **Enter** at each to accept the default, or type your own (`HH:MM`). |
-
-## 4. Get your BambooHR API key
-
-When the wizard reaches the API-key prompt, your browser will pop open at the right BambooHR page. If it doesn't:
-
-1. Open `https://<your-subdomain>.bamboohr.com/settings/api.php` in any browser
-2. Click **Add New Key**
-3. Name it `bamboo-rooster` (or anything you like)
-4. Click **Generate Key**
-5. **Copy the long string immediately** (it's only shown once)
-6. Switch back to Terminal and paste it (it won't show on screen as you paste — that's normal)
-7. Press **Enter**
 
 ## 5. Done
 
