@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-REPO_URL="https://github.com/dfsotop/bamboo-rooster.git"
+TARBALL_URL="https://github.com/dfsotop/bamboo-rooster/archive/refs/heads/main.tar.gz"
 INSTALL_DIR="${BAMBOO_ROOSTER_INSTALL_DIR:-$HOME/Applications/bamboo-rooster}"
 
 bold() { printf '\n\033[1m%s\033[0m\n' "$*"; }
@@ -36,11 +36,10 @@ case "$(uname -s)" in
 esac
 
 # --- 2. dependency summary + consent --------------------------------------
-# Inspect every dependency BEFORE installing anything. Show one combined
-# summary, ask the user once, then proceed. This avoids the surprise of
-# an install kicking off before the user knows what's coming.
+# We deliberately avoid Xcode Command Line Tools — the only thing it provides
+# us is `git`, and we use a tarball download (curl + tar, both shipped with
+# macOS) instead. That saves the user a 1 GB install and a 5-min wait.
 deps_missing=()
-command -v git  >/dev/null 2>&1 || deps_missing+=("Xcode Command Line Tools — provides git/curl (~5 min, pops a system dialog)")
 command -v brew >/dev/null 2>&1 || deps_missing+=("Homebrew — the macOS package manager (run by its official installer)")
 command -v jq   >/dev/null 2>&1 || deps_missing+=("jq — small JSON parser the rooster uses (via Homebrew)")
 
@@ -61,22 +60,7 @@ else
   esac
 fi
 
-# --- 3. Xcode Command Line Tools (provides git) ---------------------------
-if ! command -v git >/dev/null 2>&1; then
-  say "Installing Xcode Command Line Tools…"
-  xcode-select --install 2>/dev/null || true
-  cat <<EOF
-
-  A system dialog has popped up. Click "Install" and wait for it to finish.
-  When it's done, re-run the same setup command:
-
-    /bin/bash -c "\$(curl -fsSL https://raw.githubusercontent.com/dfsotop/bamboo-rooster/main/setup.sh)"
-
-EOF
-  exit 0
-fi
-
-# --- 4. Homebrew (for jq) -------------------------------------------------
+# --- 3. Homebrew (for jq) -------------------------------------------------
 if ! command -v brew >/dev/null 2>&1; then
   say "Installing Homebrew…"
   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
@@ -89,25 +73,34 @@ if ! command -v brew >/dev/null 2>&1; then
   fi
 fi
 
-# --- 5. jq ----------------------------------------------------------------
+# --- 4. jq ----------------------------------------------------------------
 if ! command -v jq >/dev/null 2>&1; then
   say "Installing jq…"
   brew install jq
 fi
 
-# --- 6. clone or update ---------------------------------------------------
+# --- 5. fetch repo via tarball -------------------------------------------
+# If the user has cloned the repo manually (so .git is present), respect
+# that and let them update via git themselves. Otherwise atomically replace
+# the install with the latest main branch tarball.
 if [[ -d "$INSTALL_DIR/.git" ]]; then
-  say "Updating existing install at $INSTALL_DIR"
-  cd "$INSTALL_DIR"
-  git fetch --quiet origin
-  git reset --quiet --hard origin/main
+  say "Existing git checkout at $INSTALL_DIR — not touching (update via 'git pull' if you want to)"
 else
   say "Downloading bamboo-rooster to $INSTALL_DIR"
   mkdir -p "$(dirname "$INSTALL_DIR")"
-  git clone --quiet "$REPO_URL" "$INSTALL_DIR"
+  tmp=$(mktemp -d)
+  trap 'rm -rf "$tmp"' EXIT
+  curl -fsSL "$TARBALL_URL" | tar -xz -C "$tmp"
+  # GitHub tarballs extract to <repo>-<branch>/, e.g. bamboo-rooster-main
+  extracted="$tmp"/bamboo-rooster-main
+  if [[ ! -d "$extracted" ]]; then
+    fail "tarball didn't contain the expected directory"
+  fi
+  rm -rf "$INSTALL_DIR"
+  mv "$extracted" "$INSTALL_DIR"
 fi
 ok "code ready at $INSTALL_DIR"
 
-# --- 7. hand off to install.sh -------------------------------------------
+# --- 6. hand off to install.sh -------------------------------------------
 say "Running setup wizard"
 exec "$INSTALL_DIR/install.sh"

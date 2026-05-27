@@ -28,10 +28,10 @@ What it does, in order:
 
 | Step | What happens |
 |---|---|
-| Xcode Tools | If you don't have `git`, macOS opens a system dialog to install Apple's Command Line Tools (~5 minutes). When it's done, re-run the same command. |
-| Homebrew | Installs Homebrew if you don't have it. It'll ask for your Mac password to put files in `/opt/homebrew` or `/usr/local`. |
-| jq | A small JSON-parsing tool the script needs. Installs via Homebrew. |
-| Download | Copies the bamboo-rooster files to `~/Applications/bamboo-rooster/`. |
+| Dependency check | Shows you what's about to be installed (Homebrew and/or `jq`) and asks once before touching anything. |
+| Homebrew | Installed only if you don't already have it. It'll ask for your Mac password to put files in `/opt/homebrew` or `/usr/local`. |
+| jq | A small JSON-parsing tool the rooster needs. Installs via Homebrew. |
+| Download | Fetches the bamboo-rooster files to `~/Applications/bamboo-rooster/` (curl + tar, no git needed). |
 | Wizard | The setup wizard starts and asks you questions. |
 
 ## 3. Answer the wizard
