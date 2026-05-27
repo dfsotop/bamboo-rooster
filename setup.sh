@@ -35,9 +35,35 @@ case "$(uname -s)" in
   *) fail "Unsupported OS: $(uname -s)" ;;
 esac
 
-# --- 2. Xcode Command Line Tools (provides git) ---------------------------
+# --- 2. dependency summary + consent --------------------------------------
+# Inspect every dependency BEFORE installing anything. Show one combined
+# summary, ask the user once, then proceed. This avoids the surprise of
+# an install kicking off before the user knows what's coming.
+deps_missing=()
+command -v git  >/dev/null 2>&1 || deps_missing+=("Xcode Command Line Tools — provides git/curl (~5 min, pops a system dialog)")
+command -v brew >/dev/null 2>&1 || deps_missing+=("Homebrew — the macOS package manager (run by its official installer)")
+command -v jq   >/dev/null 2>&1 || deps_missing+=("jq — small JSON parser the rooster uses (via Homebrew)")
+
+if (( ${#deps_missing[@]} == 0 )); then
+  ok "all dependencies present"
+else
+  bold "The following will be installed:"
+  for d in "${deps_missing[@]}"; do
+    echo "  • $d"
+  done
+  echo
+  if [[ ! -t 0 ]]; then
+    fail "non-interactive shell, can't prompt. Re-run in a Terminal window."
+  fi
+  read -r -p "Continue? [Y/n] " answer </dev/tty
+  case "${answer:-y}" in
+    n|N|no|NO|nope) fail "aborted by user" ;;
+  esac
+fi
+
+# --- 3. Xcode Command Line Tools (provides git) ---------------------------
 if ! command -v git >/dev/null 2>&1; then
-  say "Installing Xcode Command Line Tools (one-time, takes ~5 minutes)…"
+  say "Installing Xcode Command Line Tools…"
   xcode-select --install 2>/dev/null || true
   cat <<EOF
 
@@ -50,9 +76,9 @@ EOF
   exit 0
 fi
 
-# --- 3. Homebrew (for jq) -------------------------------------------------
+# --- 4. Homebrew (for jq) -------------------------------------------------
 if ! command -v brew >/dev/null 2>&1; then
-  say "Installing Homebrew (one-time)…"
+  say "Installing Homebrew…"
   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
   # Apple Silicon installs to /opt/homebrew; Intel to /usr/local. Make brew
   # findable in THIS shell so the next step works without re-login.
@@ -63,13 +89,13 @@ if ! command -v brew >/dev/null 2>&1; then
   fi
 fi
 
-# --- 4. jq ----------------------------------------------------------------
+# --- 5. jq ----------------------------------------------------------------
 if ! command -v jq >/dev/null 2>&1; then
   say "Installing jq…"
   brew install jq
 fi
 
-# --- 5. clone or update ---------------------------------------------------
+# --- 6. clone or update ---------------------------------------------------
 if [[ -d "$INSTALL_DIR/.git" ]]; then
   say "Updating existing install at $INSTALL_DIR"
   cd "$INSTALL_DIR"
@@ -82,6 +108,6 @@ else
 fi
 ok "code ready at $INSTALL_DIR"
 
-# --- 6. hand off to install.sh -------------------------------------------
+# --- 7. hand off to install.sh -------------------------------------------
 say "Running setup wizard"
 exec "$INSTALL_DIR/install.sh"

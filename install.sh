@@ -70,23 +70,52 @@ for bin in "${required[@]}"; do
   command -v "$bin" >/dev/null 2>&1 || missing+=("$bin")
 done
 if (( ${#missing[@]} > 0 )); then
-  echo "missing: ${missing[*]}" >&2
-  # Only suggest installable packages (skip system binaries like launchctl).
+  # Split missing tools into installable (jq, curl) vs system (launchctl, etc.).
   installable=()
+  system_missing=()
   for m in "${missing[@]}"; do
-    case "$m" in jq|curl) installable+=("$m") ;; esac
+    case "$m" in jq|curl) installable+=("$m") ;; *) system_missing+=("$m") ;; esac
   done
-  if (( ${#installable[@]} > 0 )); then
-    echo "$(suggest_install "${installable[@]}")" >&2
+
+  # System binaries can't be installed via package manager — hard fail.
+  if (( ${#system_missing[@]} > 0 )); then
+    echo "missing system binaries: ${system_missing[*]}" >&2
+    for m in "${system_missing[@]}"; do
+      case "$m" in
+        launchctl|plutil)   echo "  $m is part of macOS — are you sure you're on Darwin?" >&2 ;;
+        systemctl|loginctl) echo "  $m is part of systemd — your distro may not use it; consider docker/" >&2 ;;
+      esac
+    done
+    exit 1
   fi
-  # System binaries
-  for m in "${missing[@]}"; do
-    case "$m" in
-      launchctl|plutil) echo "  $m is part of macOS — are you sure you're on Darwin?" >&2 ;;
-      systemctl|loginctl) echo "  $m is part of systemd — your distro may not use it; consider docker/" >&2 ;;
-    esac
+
+  # Installable deps: show what's needed and offer to run the right command.
+  cmd=$(suggest_install "${installable[@]}")
+  echo "missing dependencies: ${installable[*]}"
+  echo "I can install them by running:"
+  echo "    $cmd"
+  echo
+  if [[ ! -t 0 ]]; then
+    echo "non-interactive shell, can't prompt. Run the command above manually, then re-run install.sh." >&2
+    exit 1
+  fi
+  read -r -p "Run it now? [Y/n] " answer </dev/tty
+  case "${answer:-y}" in
+    n|N|no|NO|nope)
+      echo "aborted. Install the dependencies yourself, then re-run install.sh." >&2
+      exit 1
+      ;;
+  esac
+  step "installing missing dependencies"
+  eval "$cmd"
+  # Re-check after install.
+  for bin in "${installable[@]}"; do
+    if ! command -v "$bin" >/dev/null 2>&1; then
+      echo "  ✗ $bin still missing after install — please install it manually" >&2
+      exit 1
+    fi
   done
-  exit 1
+  echo "  ✓ ${installable[*]} now available"
 fi
 
 # --- 2. host paths --------------------------------------------------------
