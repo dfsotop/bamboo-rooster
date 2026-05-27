@@ -4,6 +4,8 @@ Randomized BambooHR clock-in / clock-out, four times a workday. Designed to look
 
 For the why and the design rationale, read [`wiki/README.md`](wiki/README.md) and [`wiki/plan.md`](wiki/plan.md). This file is just the quickstart.
 
+> ⚠ **Disclaimer.** bamboo-rooster is a helper tool that schedules clock-in/clock-out actions against BambooHR. It is provided **AS-IS**, without warranty. **You remain solely responsible** for verifying that your timesheet records are accurate and complete, and for complying with your company's time-tracking policy. This tool can fail silently — it does **not** replace your obligation to keep your records correct.
+
 ---
 
 ## Quickstart

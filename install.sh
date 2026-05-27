@@ -58,7 +58,7 @@ detect_tz() {
   fi
 }
 
-# --- 0. preflight: API key required --------------------------------------
+# --- 0. preflight: disclaimer + API key required -------------------------
 # When called by setup.sh, BAMBOO_ROOSTER_KEY_CONFIRMED is already set and
 # we skip this. When the user runs install.sh directly from a cloned repo,
 # we ask the same gate question setup.sh asks.
@@ -66,9 +66,16 @@ if [[ -z "${BAMBOO_ROOSTER_KEY_CONFIRMED:-}" ]] \
    && [[ ! -f "$ROOSTER_HOME/secrets/api-key" ]]; then
   cat <<'EOF'
 
-This wizard configures bamboo-rooster. You'll need a BambooHR API key first.
+DISCLAIMER
+  bamboo-rooster is a helper that schedules clock-in/clock-out actions
+  against BambooHR. It is provided AS-IS, without any warranty. YOU
+  remain SOLELY RESPONSIBLE for verifying that your timesheet records
+  are accurate and complete, and for complying with your company's
+  time-tracking policy. The tool can fail silently (network issues,
+  API changes, scheduler not firing, etc.) — it does NOT replace your
+  own obligation to keep your timesheet correct.
 
-How to get one:
+You'll need a BambooHR API key. How to get one:
   1. Log in to https://<your-subdomain>.bamboohr.com
   2. Click your profile picture (top right) → "API Keys"
   3. Click "Add New Key", give it a name (e.g. "bamboo-rooster")
@@ -82,12 +89,12 @@ EOF
     echo "non-interactive shell, can't prompt. Re-run in a Terminal window." >&2
     exit 1
   fi
-  read -r -p "Do you have your API key ready? [y/N] " key_ready </dev/tty
-  case "${key_ready:-n}" in
+  read -r -p "I accept the disclaimer and have my API key ready. [y/N] " accept </dev/tty
+  case "${accept:-n}" in
     y|Y|yes|YES) export BAMBOO_ROOSTER_KEY_CONFIRMED=1 ;;
     *)
       echo
-      echo "Aborting. Get your API key first, then re-run ./install.sh."
+      echo "Aborting."
       exit 0
       ;;
   esac

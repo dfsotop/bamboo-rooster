@@ -2,6 +2,8 @@
 
 Five minutes. macOS.
 
+> ⚠ **Disclaimer.** This is a helper tool that schedules clock-in/clock-out actions against BambooHR. It is provided **AS-IS**, without warranty. **You remain solely responsible** for verifying that your timesheet records are accurate and complete, and for complying with your company's time-tracking policy. The tool can fail silently — it does **not** replace your obligation to keep your records correct. The installer will ask you to accept this before doing anything.
+
 ## What this does
 
 Clocks you in and out of BambooHR four times a workday (morning, lunch out, lunch back in, evening) at randomized minutes inside windows you choose. Skips weekends, holidays, and any approved PTO / sick day automatically. Runs in the background — nothing to do once it's set up.

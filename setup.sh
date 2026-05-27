@@ -35,16 +35,22 @@ case "$(uname -s)" in
   *) fail "Unsupported OS: $(uname -s)" ;;
 esac
 
-# --- 2. preflight: API key required --------------------------------------
-# Asked BEFORE any system change so we don't install brew/jq for someone
-# who can't actually use the tool. Exports BAMBOO_ROOSTER_KEY_CONFIRMED so
-# the install.sh wizard further down doesn't re-prompt for the same thing.
+# --- 2. preflight: disclaimer + API key required -------------------------
+# Asked BEFORE any system change so we don't install jq or download the
+# repo for someone who can't (or won't) use the tool. Exports
+# BAMBOO_ROOSTER_KEY_CONFIRMED so install.sh further down doesn't re-prompt.
 cat <<'EOF'
 
-This installs bamboo-rooster, which clocks you in and out of BambooHR
-automatically. You'll need a BambooHR API key first.
+DISCLAIMER
+  bamboo-rooster is a helper that schedules clock-in/clock-out actions
+  against BambooHR. It is provided AS-IS, without any warranty. YOU
+  remain SOLELY RESPONSIBLE for verifying that your timesheet records
+  are accurate and complete, and for complying with your company's
+  time-tracking policy. The tool can fail silently (network issues,
+  API changes, scheduler not firing, etc.) — it does NOT replace your
+  own obligation to keep your timesheet correct.
 
-How to get one:
+You'll need a BambooHR API key. How to get one:
   1. Log in to https://<your-subdomain>.bamboohr.com
   2. Click your profile picture (top right) → "API Keys"
   3. Click "Add New Key", give it a name (e.g. "bamboo-rooster")
@@ -57,15 +63,15 @@ EOF
 if [[ ! -t 0 ]]; then
   fail "non-interactive shell, can't prompt. Re-run in a Terminal window."
 fi
-read -r -p "Do you have your API key ready? [y/N] " key_ready </dev/tty
-case "${key_ready:-n}" in
+read -r -p "I accept the disclaimer and have my API key ready. [y/N] " accept </dev/tty
+case "${accept:-n}" in
   y|Y|yes|YES)
     export BAMBOO_ROOSTER_KEY_CONFIRMED=1
     ;;
   *)
     cat <<'EOF'
 
-Aborting. Get your API key first, then re-run the same setup command:
+Aborting. When you're ready, re-run the same setup command:
 
   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/dfsotop/bamboo-rooster/main/setup.sh)"
 
