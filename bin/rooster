@@ -175,6 +175,19 @@ EOF
   if [[ -z "$edit_start" && -z "$edit_start_range" ]]; then
     echo "rooster edit: pass --start HH:MM or --start-random A-B" >&2; exit 2
   fi
+  # Validate user-supplied times. The JSON body is built via jq -n --arg
+  # (safe regardless of input), but a malformed time would still produce
+  # a 4xx from BambooHR with confusing error text — better to refuse early.
+  _hhmm_re='^([01][0-9]|2[0-3]):[0-5][0-9]$'
+  if [[ -n "$edit_start" && ! "$edit_start" =~ $_hhmm_re ]]; then
+    echo "rooster edit: --start expects HH:MM (24h)" >&2; exit 2
+  fi
+  if [[ -n "$edit_end" && ! "$edit_end" =~ $_hhmm_re ]]; then
+    echo "rooster edit: --end expects HH:MM (24h)" >&2; exit 2
+  fi
+  if [[ -n "$edit_id" && ! "$edit_id" =~ ^[0-9]+$ ]]; then
+    echo "rooster edit: --id expects a numeric entry id" >&2; exit 2
+  fi
 
   if ! employee_id=$(bamboo_resolve_self_employee_id); then
     echo "rooster edit: could not resolve employee id (HTTP $(bamboo_last_status))" >&2
@@ -262,6 +275,15 @@ if [[ "${1:-}" == "--auth-check" ]]; then
   if response=$(bamboo_request GET "/employees/0/?fields=id") \
      && id=$(echo "$response" | jq -r '.id // empty') \
      && [[ -n "$id" ]]; then
+    # Warn loudly if a new key resolves to a different employee — could
+    # mean an admin gave you a service-account key, or the .env points at
+    # someone else. Either way the phases would start clocking the wrong
+    # employee silently.
+    prev=$(state_get self_employee_id)
+    if [[ -n "$prev" && "$prev" != "$id" ]]; then
+      echo "⚠  cached employee id was $prev, new key resolves to $id" >&2
+      echo "   if unexpected, check $ROOSTER_HOME/.env (BAMBOOHR_EMPLOYEE_ID) and the key itself" >&2
+    fi
     state_set self_employee_id "$id"
     echo "✓ key works (employee ID: $id)"
     exit 0
@@ -313,8 +335,11 @@ fi
 
 # --- Gate 3: BambooHR time-off + holidays --------------------------------
 
-if is_on_time_off_or_holiday "$employee_id" "$today"; then
-  log_event skipped "$PHASE" reason=time-off-or-holiday
+if reason_detail=$(is_on_time_off_or_holiday "$employee_id" "$today"); then
+  # Gate echoes "whos-out-api-error" if it couldn't reach BambooHR and
+  # skipped conservatively — surface that as the real reason instead of
+  # the misleading default "time-off-or-holiday".
+  log_event skipped "$PHASE" reason="${reason_detail:-time-off-or-holiday}"
   exit 0
 fi
 
@@ -373,8 +398,8 @@ today=$(date +%F)
 
 # --- Re-check gates 3 + 4 after sleeping ----------------------------------
 
-if is_on_time_off_or_holiday "$employee_id" "$today" --force-refresh; then
-  log_event skipped "$PHASE" reason=time-off-or-holiday-post-sleep
+if reason_detail=$(is_on_time_off_or_holiday "$employee_id" "$today" --force-refresh); then
+  log_event skipped "$PHASE" reason="${reason_detail:-time-off-or-holiday}-post-sleep"
   exit 0
 fi
 if skip_detail=$(already_clocked_for_phase "$employee_id" "$PHASE" "$today"); then

@@ -59,10 +59,12 @@ is_on_time_off_or_holiday() {
   local response
   if ! response=$(bamboo_get_whos_out_today "$today"); then
     # Conservative: if we can't reach the API, treat it as "on time off"
-    # so we don't accidentally clock in on a sick day. The phase will skip
-    # with reason=time-off-or-holiday.
+    # so we don't accidentally clock in on a sick day. Emit a DISTINCT
+    # detail string so the caller can log the real reason (api error)
+    # rather than misleading "time-off-or-holiday".
     log_event api_error "${PHASE:-unknown}" \
-      endpoint=whos_out http_status="${BAMBOO_LAST_STATUS:-000}"
+      endpoint=whos_out http_status="$(bamboo_last_status)"
+    echo "whos-out-api-error"
     return 0
   fi
 
@@ -121,9 +123,25 @@ already_clocked_for_phase() {
     return 0
   fi
 
+  # Filter to entries we understand. Surface unknown types (a hypothetical
+  # future BambooHR addition) via parse_error so we don't silently broaden
+  # or narrow the gate's behaviour without anyone noticing.
+  local known_count unknown_count
+  known_count=$(echo "$response" | jq \
+    'map(select((.type? // "") == "clock" or (.type? // "") == "hour")) | length')
+  unknown_count=$(echo "$response" | jq \
+    'map(select((.type? // "") != "clock" and (.type? // "") != "hour")) | length')
+  if (( unknown_count > 0 )); then
+    log_event parse_error "${PHASE:-unknown}" \
+      endpoint=timesheet_entries reason=unknown-entry-types \
+      unknown_count="$unknown_count"
+  fi
+
+  # Sort clock entries chronologically by start, so .[0] is genuinely the
+  # first and .[-1] is the last (BambooHR's response order isn't contractual).
   local clock_entries
   clock_entries=$(echo "$response" | jq -c \
-    'map(select((.type? // "") == "clock"))')
+    'map(select((.type? // "") == "clock")) | sort_by(.start // "")')
 
   local now_epoch
   now_epoch=$(date -u +%s)
@@ -136,11 +154,14 @@ already_clocked_for_phase() {
 
   case "$phase" in
     morning)
-      # Skip iff any entry exists today (clock punch or hour entry).
-      if [[ "$(echo "$response" | jq 'length')" -ge 1 ]]; then
+      # Skip iff any entry of a known type (clock or hour) exists today.
+      if [[ "$known_count" -ge 1 ]]; then
         should_skip=0
+        # Pick the chronologically-earliest entry for the display message.
         local first_start
-        first_start=$(echo "$response" | jq -r '.[0].start // empty')
+        first_start=$(echo "$response" | jq -r \
+          'map(select((.type? // "") == "clock" or (.type? // "") == "hour"))
+           | sort_by(.start // "") | .[0].start // empty')
         if [[ -n "$first_start" ]]; then
           skip_kv="clocked_in_at=$(iso_to_local_hhmm "$first_start")"
         fi
@@ -164,18 +185,27 @@ already_clocked_for_phase() {
       ;;
     lunch-in)
       # Skip unless there's exactly one closed entry whose end was within
-      # the last 2h — i.e., we genuinely just clocked out for lunch.
-      if ! echo "$clock_entries" | jq -e --argjson now "$now_epoch" '
-            length == 1
-            and .[0].end != null
-            and (
-              ($now - (.[0].end | fromdateiso8601? // 0)) > 0
-              and ($now - (.[0].end | fromdateiso8601? // 0)) <= 7200
-            )
-          ' >/dev/null; then
+      # the last 2h. The end-epoch is precomputed in BASH because jq's
+      # `fromdateiso8601` only parses "…Z" form; BambooHR returns "+00:00"
+      # — the old jq-only path silently treated the parse failure as
+      # "ended at epoch 0", which would let lunch-in proceed and double-clock.
+      local count last_end_iso last_end_epoch
+      count=$(echo "$clock_entries" | jq 'length')
+      last_end_iso=$(echo "$clock_entries" | jq -r '.[0].end // empty')
+      last_end_epoch=0
+      [[ -n "$last_end_iso" ]] && last_end_epoch=$(iso_to_epoch "$last_end_iso")
+
+      local can_proceed=0
+      if (( count == 1 )) && [[ -n "$last_end_iso" ]]; then
+        local delta=$(( now_epoch - last_end_epoch ))
+        if (( delta > 0 )) && (( delta <= 7200 )); then
+          can_proceed=1
+        fi
+      fi
+
+      if (( can_proceed == 0 )); then
         should_skip=0
-        local count open_start last_end
-        count=$(echo "$clock_entries" | jq 'length')
+        local open_start last_end
         open_start=$(echo "$clock_entries" | jq -r \
           '[.[] | select(.end == null)] | first.start // empty')
         last_end=$(echo "$clock_entries" | jq -r \
@@ -235,6 +265,22 @@ window_size_seconds() {
     || { echo "rooster: no window for phase '$phase' in $WINDOWS_CONF" >&2; return 1; }
   read -r _ start end <<<"$line"
   echo $(( $(_hhmm_to_seconds "$end") - $(_hhmm_to_seconds "$start") ))
+}
+
+# BambooHR ISO 8601 timestamp → epoch (seconds). Handles both "…Z" and
+# "+HH:MM" offsets, portably across GNU/BSD date. Returns "0" on parse
+# failure — caller should treat 0 as "unknown / can't reason about time".
+# jq's `fromdateiso8601` ONLY parses Z form, so we precompute in bash.
+iso_to_epoch() {
+  local iso="$1" e
+  if date --version >/dev/null 2>&1; then
+    e=$(date -d "$iso" +%s 2>/dev/null) || { echo "0"; return; }
+  else
+    local cleaned
+    cleaned=$(echo "$iso" | sed -E 's/([+-][0-9]{2}):([0-9]{2})$/\1\2/' | sed 's/Z$/+0000/')
+    e=$(date -j -f "%Y-%m-%dT%H:%M:%S%z" "$cleaned" +%s 2>/dev/null) || { echo "0"; return; }
+  fi
+  echo "$e"
 }
 
 # BambooHR timestamps ("2026-05-22T07:15:00+00:00") → local "HH:MM".

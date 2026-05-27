@@ -5,15 +5,18 @@
 # Depends on: log.sh, state.sh. Sets BAMBOO_LAST_STATUS for callers that
 # want to inspect the HTTP code (e.g. the bare auth-check helper).
 
+: "${ROOSTER_HOME:?ROOSTER_HOME must be set before sourcing lib/auth.sh}"
 : "${BAMBOOHR_API_BASE:=https://api.bamboohr.com/api/gateway.php}"
 : "${ROOSTER_AUTH_FAIL_LOG_COOLDOWN_HOURS:=6}"
 
 # Last HTTP status from bamboo_request. The shell variable works for inline
 # callers (auth.sh's own internal handlers); callers that capture stdout via
 # `$(bamboo_request …)` lose it to the subshell. For those we ALSO persist
-# it to disk and expose `bamboo_last_status` to read it back.
+# it to disk and expose `bamboo_last_status` to read it back. ROOSTER_HOME
+# is required (asserted above) — no /tmp fallback to avoid a symlink-trap
+# vector at a predictable path.
 _status_file() {
-  printf '%s' "${BAMBOO_STATUS_FILE:-${ROOSTER_HOME:-/tmp}/.last_status}"
+  printf '%s' "${BAMBOO_STATUS_FILE:-${ROOSTER_HOME}/.last_status}"
 }
 
 bamboo_last_status() {
@@ -72,13 +75,19 @@ bamboo_request() {
 
   local url="${BAMBOOHR_API_BASE}/${BAMBOOHR_SUBDOMAIN}/v1${path}"
 
-  local body_file http_status
+  local body_file http_status creds_file
   body_file=$(mktemp)
+  # Write the BambooHR credentials to a chmod-600 config file rather than
+  # passing them via `curl -u key:x` — argv would leak the key to anyone
+  # who can run `ps`/`/proc/<pid>/cmdline` for the same user.
+  creds_file=$(mktemp "${ROOSTER_HOME}/.creds.XXXXXX")
+  chmod 600 "$creds_file"
+  printf 'user = "%s:x"\n' "$key" >"$creds_file"
 
   if [[ $# -gt 0 ]]; then
     http_status=$(curl -sS -o "$body_file" -w "%{http_code}" \
       --max-time 30 \
-      -u "${key}:x" \
+      --config "$creds_file" \
       -X "$method" \
       -H "Accept: application/json" \
       -H "Content-Type: application/json" \
@@ -87,11 +96,12 @@ bamboo_request() {
   else
     http_status=$(curl -sS -o "$body_file" -w "%{http_code}" \
       --max-time 30 \
-      -u "${key}:x" \
+      --config "$creds_file" \
       -X "$method" \
       -H "Accept: application/json" \
       "$url" 2>/dev/null) || http_status="000"
   fi
+  rm -f "$creds_file"
 
   BAMBOO_LAST_STATUS="$http_status"
   # Persist to disk so callers using `response=$(bamboo_request …)` can read

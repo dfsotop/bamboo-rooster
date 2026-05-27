@@ -179,8 +179,17 @@ if [[ ! -f "$ROOSTER_HOME/.env" ]]; then
   employee_id="${employee_id// /}"
 
   detected_tz=$(detect_tz)
-  read -r -p "Timezone [$detected_tz]: " tz
-  tz="${tz:-$detected_tz}"
+  # Re-prompt until the user provides a zone that exists in /usr/share/zoneinfo.
+  # A typo like "Europe/Madird" would otherwise silently fall through to UTC
+  # at runtime and cause cron-window confusion.
+  while true; do
+    read -r -p "Timezone [$detected_tz]: " tz
+    tz="${tz:-$detected_tz}"
+    if [[ -f "/usr/share/zoneinfo/$tz" ]]; then
+      break
+    fi
+    echo "  '$tz' isn't a valid zoneinfo zone. Try e.g. Europe/Madrid, America/New_York, Asia/Tokyo." >&2
+  done
 
   read -r -p "Start in DRY_RUN mode (gates run, no real clock_in/out)? [Y/n] " dry_run_yn
   case "${dry_run_yn:-y}" in

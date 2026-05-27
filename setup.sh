@@ -16,6 +16,12 @@ set -euo pipefail
 TARBALL_URL="https://github.com/dfsotop/bamboo-rooster/archive/refs/heads/main.tar.gz"
 INSTALL_DIR="${BAMBOO_ROOSTER_INSTALL_DIR:-$HOME/Applications/bamboo-rooster}"
 
+# Pinned jq binaries with SHA-256 (computed against jqlang/jq 1.7.1
+# release artifacts). Bump JQ_VERSION + both sums together when updating.
+JQ_VERSION="1.7.1"
+JQ_SHA256_arm64="0bbe619e663e0de2c550be2fe0d240d076799d6f8a652b70fa04aea8a8362e8a"
+JQ_SHA256_amd64="4155822bbf5ea90f5c79cf254665975eb4274d426d0709770c21774de5407443"
+
 bold() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 say()  { printf '\n\033[1;36m▸\033[0m %s\n' "$*"; }
 ok()   { printf '\033[1;32m✓\033[0m %s\n' "$*"; }
@@ -84,7 +90,6 @@ esac
 # No Xcode CLT (we use curl + tar for the repo download). No Homebrew either:
 # the only thing it would install for us is jq, and jq publishes single-file
 # macOS binaries (~600 KB) we can download directly from its GitHub releases.
-JQ_VERSION="1.7.1"
 JQ_INSTALL_DIR="$HOME/.bamboo-rooster/bin"
 
 deps_missing=()
@@ -111,11 +116,11 @@ else
   esac
 fi
 
-# --- 4. jq (direct binary download) --------------------------------------
+# --- 4. jq (direct binary download with SHA-256 verification) ------------
 if (( need_jq )); then
   case "$(uname -m)" in
-    arm64)  jq_arch="arm64" ;;
-    x86_64) jq_arch="amd64" ;;
+    arm64)  jq_arch="arm64"; jq_sha="$JQ_SHA256_arm64" ;;
+    x86_64) jq_arch="amd64"; jq_sha="$JQ_SHA256_amd64" ;;
     *) fail "unsupported CPU architecture: $(uname -m)" ;;
   esac
   jq_url="https://github.com/jqlang/jq/releases/download/jq-${JQ_VERSION}/jq-macos-${jq_arch}"
@@ -125,15 +130,31 @@ if (( need_jq )); then
   if ! curl -fsSL "$jq_url" -o "$JQ_INSTALL_DIR/jq"; then
     fail "could not download jq from $jq_url"
   fi
+  # Pinned SHA-256 check — refuses to install anything other than the
+  # exact bytes we expect. Protects against a future supply-chain swap.
+  actual_sha=$(shasum -a 256 "$JQ_INSTALL_DIR/jq" | awk '{print $1}')
+  if [[ "$actual_sha" != "$jq_sha" ]]; then
+    rm -f "$JQ_INSTALL_DIR/jq"
+    fail "jq SHA-256 mismatch — expected $jq_sha, got $actual_sha. Aborting."
+  fi
   chmod +x "$JQ_INSTALL_DIR/jq"
   if ! "$JQ_INSTALL_DIR/jq" --version >/dev/null 2>&1; then
     fail "downloaded jq doesn't run (file may be corrupted or arch wrong)"
   fi
   export PATH="$JQ_INSTALL_DIR:$PATH"
-  ok "jq installed at $JQ_INSTALL_DIR/jq"
+  ok "jq installed at $JQ_INSTALL_DIR/jq (sha256 verified)"
 fi
 
 # --- 5. fetch repo via tarball -------------------------------------------
+# Guard against env-poisoned BAMBOO_ROOSTER_INSTALL_DIR being set to
+# something we'd `rm -rf` later — like $HOME or /. Refuse without prejudice.
+case "$INSTALL_DIR" in
+  ""|"/"|"$HOME"|"$HOME/") fail "refusing to install at '$INSTALL_DIR' (too broad)" ;;
+esac
+case "$INSTALL_DIR" in
+  /tmp|/var|/etc|/usr|/bin|/sbin) fail "refusing to install at system path '$INSTALL_DIR'" ;;
+esac
+
 # If the user has cloned the repo manually (so .git is present), respect
 # that and let them update via git themselves. Otherwise atomically replace
 # the install with the latest main branch tarball.

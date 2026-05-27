@@ -65,12 +65,20 @@ if [[ -z "$new_key" ]]; then
 fi
 
 # Validate against /employees/0/?fields=id with the candidate key.
+# Credentials go in a chmod-600 config file rather than curl -u argv —
+# otherwise any process running as this user can read the key from
+# /proc/<pid>/cmdline or `ps auxww` for the duration of the request.
+creds_file=$(mktemp "${KEY_DIR}/.creds.XXXXXX")
+chmod 600 "$creds_file"
+printf 'user = "%s:x"\n' "$new_key" >"$creds_file"
+
 status=$(curl -sS -o /dev/null -w "%{http_code}" \
   --max-time 30 \
-  -u "${new_key}:x" \
+  --config "$creds_file" \
   -H "Accept: application/json" \
   "https://api.bamboohr.com/api/gateway.php/${BAMBOOHR_SUBDOMAIN}/v1/employees/0/?fields=id" \
   || echo "000")
+rm -f "$creds_file"
 
 if [[ "$status" != 2* ]]; then
   echo "rotate-key: validation failed (HTTP $status). Key NOT saved." >&2

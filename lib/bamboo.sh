@@ -7,12 +7,20 @@
 # first successful call so we don't pay the round-trip every phase.
 bamboo_resolve_self_employee_id() {
   if [[ -n "${BAMBOOHR_EMPLOYEE_ID:-}" ]]; then
+    if [[ ! "$BAMBOOHR_EMPLOYEE_ID" =~ ^[0-9]+$ ]]; then
+      echo "rooster: BAMBOOHR_EMPLOYEE_ID is not numeric: '$BAMBOOHR_EMPLOYEE_ID'" >&2
+      return 1
+    fi
+    # Marker so callers checking $(bamboo_last_status) don't read a stale
+    # HTTP code from a previous network call.
+    printf 'cached' >"$(_status_file)" 2>/dev/null || true
     echo "$BAMBOOHR_EMPLOYEE_ID"
     return 0
   fi
   local cached
   cached=$(state_get self_employee_id)
   if [[ -n "$cached" ]]; then
+    printf 'cached' >"$(_status_file)" 2>/dev/null || true
     echo "$cached"
     return 0
   fi
@@ -65,9 +73,19 @@ bamboo_clock_out() {
 # them first (clock_out or rooster lunch-out/evening).
 #
 # Args: id, employee_id, date (YYYY-MM-DD), start (HH:MM), end (HH:MM)
+#
+# JSON is built with jq -n --arg / --argjson rather than string
+# interpolation so user-supplied --start / --end values can't break out
+# of the payload shape.
 bamboo_update_clock_entry() {
   local id="$1" employee_id="$2" date="$3" start="$4" end="$5"
-  bamboo_request POST "/time_tracking/clock_entries/store" \
-    "{\"entries\":[{\"id\":${id},\"employeeId\":${employee_id},\"date\":\"${date}\",\"start\":\"${start}\",\"end\":\"${end}\"}]}" \
-    >/dev/null
+  local body
+  body=$(jq -nc \
+    --argjson id "$id" \
+    --argjson eid "$employee_id" \
+    --arg date "$date" \
+    --arg start "$start" \
+    --arg end "$end" \
+    '{entries: [{id: $id, employeeId: $eid, date: $date, start: $start, end: $end}]}')
+  bamboo_request POST "/time_tracking/clock_entries/store" "$body" >/dev/null
 }
