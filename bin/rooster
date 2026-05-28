@@ -38,6 +38,7 @@ Usage:
   rooster config           Print the active configuration (read-only).
   rooster edit ...         Edit a closed clock entry's start/end.
                            Run `rooster edit --help` for the flags.
+  rooster update           Fetch and install the latest main from GitHub.
   rooster --auth-check     Live API round-trip; verifies the key works.
                            Bypasses the cached employee ID.
   rooster -h | --help      This help.
@@ -126,6 +127,85 @@ source "$ROOSTER_ROOT/lib/bamboo.sh"
 source "$ROOSTER_ROOT/lib/gates.sh"
 
 # --- Subcommands ----------------------------------------------------------
+
+if [[ "${1:-}" == "update" ]]; then
+  PHASE=update
+  shift
+  case "${1:-}" in
+    -h|--help|help)
+      cat <<'EOF'
+Usage: rooster update
+
+Fetch the latest main-branch tarball from
+github.com/dfsotop/bamboo-rooster, atomically replace the install dir,
+and re-run install.sh to regenerate scheduler units. Your config and
+secrets in ~/.bamboo-rooster/ are not touched.
+
+Refuses to run if the install dir is a git checkout (.git/ present);
+use `git pull` and `./install.sh` manually in that case.
+EOF
+      exit 0
+      ;;
+  esac
+
+  TARBALL_URL="https://github.com/dfsotop/bamboo-rooster/archive/refs/heads/main.tar.gz"
+
+  if [[ -d "$ROOSTER_ROOT/.git" ]]; then
+    echo "rooster update: $ROOSTER_ROOT is a git checkout." >&2
+    echo "Use 'cd $ROOSTER_ROOT && git pull && ./install.sh' instead." >&2
+    exit 1
+  fi
+
+  cat <<EOF
+
+This will:
+  1. Download the latest main branch from github.com/dfsotop/bamboo-rooster
+  2. Replace $ROOSTER_ROOT atomically
+  3. Re-run install.sh to regenerate the scheduler units
+
+Your config and secrets at $ROOSTER_HOME are untouched.
+EOF
+  if [[ ! -t 0 ]]; then
+    echo "non-interactive shell, can't prompt" >&2
+    exit 1
+  fi
+  read -r -p "Continue? [Y/n] " answer </dev/tty
+  case "${answer:-y}" in
+    n|N|no|NO|nope) echo "aborted."; exit 0 ;;
+  esac
+
+  tmp=$(mktemp -d)
+  # shellcheck disable=SC2064  # we want $tmp expanded NOW, not at trap time
+  trap "rm -rf '$tmp'" EXIT
+
+  echo
+  echo "▸ downloading…"
+  if ! curl -fsSL "$TARBALL_URL" | tar -xz -C "$tmp"; then
+    echo "✗ download/extract failed" >&2
+    exit 1
+  fi
+  extracted="$tmp/bamboo-rooster-main"
+  if [[ ! -d "$extracted" ]]; then
+    echo "✗ tarball didn't contain the expected directory" >&2
+    exit 1
+  fi
+
+  echo "▸ replacing $ROOSTER_ROOT"
+  # bash has already read this script into memory, so rm-ing the directory
+  # underneath us is safe — the running process keeps going until the next
+  # exec call below.
+  rm -rf "$ROOSTER_ROOT"
+  mv "$extracted" "$ROOSTER_ROOT"
+  trap - EXIT
+  rm -rf "$tmp"
+
+  echo "▸ re-running install.sh to regenerate scheduler units…"
+  echo
+  # Config exists, so install.sh's first-time prompts and the API-key gate
+  # will both be skipped. Exec to hand control over and reclaim the PID.
+  export BAMBOO_ROOSTER_KEY_CONFIRMED=1
+  exec "$ROOSTER_ROOT/install.sh"
+fi
 
 if [[ "${1:-}" == "config" ]]; then
   PHASE=config

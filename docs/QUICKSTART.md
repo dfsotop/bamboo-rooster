@@ -82,7 +82,8 @@ You'll see a summary that ends with `✓ rooster scheduled`. That means:
 | Switch from DRY_RUN to live (after a few days of watching) | `sed -i.bak 's/^DRY_RUN=.*/DRY_RUN="0"/' ~/.bamboo-rooster/.env` |
 | Get a new API key working (if BambooHR rotated yours) | `rooster-rotate-key` |
 | Stop and uninstall everything | `~/Applications/bamboo-rooster/uninstall.sh` |
-| Update to the latest version | re-run the one-liner from step 2 |
+| Update to the latest version | `rooster update` |
+| See active config (read-only) | `rooster config` |
 
 ## What it doesn't do
 
