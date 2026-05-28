@@ -165,7 +165,30 @@ step "preparing $ROOSTER_HOME"
 mkdir -p "$ROOSTER_HOME/secrets"
 chmod 700 "$ROOSTER_HOME" "$ROOSTER_HOME/secrets"
 
-# --- 3. config: BambooHR subdomain ----------------------------------------
+# --- 3. config: BambooHR .env --------------------------------------------
+# Three modes:
+#   (a) no .env on disk → first-time setup, prompt for each field
+#   (b) .env on disk AND BAMBOO_ROOSTER_UPDATE_MODE=1 → walk each field
+#       with the current value as the default; Enter keeps the existing
+#   (c) .env on disk and not in update mode → leave alone
+
+_envget() {
+  grep -E "^$1=" "$ROOSTER_HOME/.env" 2>/dev/null \
+    | cut -d= -f2- | tr -d '"' | tr -d "'" | tr -d ' '
+}
+
+# Helper: re-prompt for a timezone until it exists in zoneinfo.
+_prompt_tz() {
+  local default="$1" tz
+  while true; do
+    read -r -p "Timezone [$default]: " tz
+    tz="${tz:-$default}"
+    if [[ -f "/usr/share/zoneinfo/$tz" ]]; then echo "$tz"; return; fi
+    echo "  '$tz' isn't a valid zoneinfo zone. Try e.g. Europe/Madrid, America/New_York, Asia/Tokyo." >&2
+  done
+}
+
+write_env=0
 if [[ ! -f "$ROOSTER_HOME/.env" ]]; then
   step "first-time setup — collecting config"
 
@@ -178,33 +201,67 @@ if [[ ! -f "$ROOSTER_HOME/.env" ]]; then
   read -r -p "BambooHR employee ID [leave blank to auto-resolve]: " employee_id || true
   employee_id="${employee_id// /}"
 
-  detected_tz=$(detect_tz)
-  # Re-prompt until the user provides a zone that exists in /usr/share/zoneinfo.
-  # A typo like "Europe/Madird" would otherwise silently fall through to UTC
-  # at runtime and cause cron-window confusion.
-  while true; do
-    read -r -p "Timezone [$detected_tz]: " tz
-    tz="${tz:-$detected_tz}"
-    if [[ -f "/usr/share/zoneinfo/$tz" ]]; then
-      break
-    fi
-    echo "  '$tz' isn't a valid zoneinfo zone. Try e.g. Europe/Madrid, America/New_York, Asia/Tokyo." >&2
-  done
+  tz=$(_prompt_tz "$(detect_tz)")
 
   read -r -p "Start in DRY_RUN mode (gates run, no real clock_in/out)? [Y/n] " dry_run_yn
   case "${dry_run_yn:-y}" in
     n|N|no|NO) dry_run="0" ;;
     *)         dry_run="1" ;;
   esac
+  # Defaults for the cooldown / cache TTL fields.
+  cooldown_hours="6"
+  whos_out_ttl="1800"
+  write_env=1
 
+elif [[ -n "${BAMBOO_ROOSTER_UPDATE_MODE:-}" ]]; then
+  step "update mode — Enter to keep each current value"
+
+  cur_subdomain=$(_envget BAMBOOHR_SUBDOMAIN)
+  cur_emp=$(_envget BAMBOOHR_EMPLOYEE_ID)
+  cur_tz=$(_envget TZ)
+  cur_dry=$(_envget DRY_RUN)
+  cooldown_hours=$(_envget ROOSTER_AUTH_FAIL_LOG_COOLDOWN_HOURS)
+  whos_out_ttl=$(_envget ROOSTER_WHOS_OUT_CACHE_TTL_SECONDS)
+  : "${cooldown_hours:=6}"
+  : "${whos_out_ttl:=1800}"
+
+  read -r -p "BambooHR subdomain [$cur_subdomain]: " subdomain
+  subdomain="${subdomain:-$cur_subdomain}"
+  subdomain="${subdomain// /}"
+
+  read -r -p "BambooHR employee ID [${cur_emp:-auto-resolve}]: " employee_id || true
+  employee_id="${employee_id// /}"
+  # Empty input keeps the current value (which may itself be empty = auto).
+  [[ -z "$employee_id" ]] && employee_id="$cur_emp"
+
+  tz=$(_prompt_tz "${cur_tz:-$(detect_tz)}")
+
+  # DRY_RUN: flip the default of the prompt so Enter keeps current.
+  if [[ "$cur_dry" == "1" ]]; then
+    read -r -p "DRY_RUN mode (Y = stay DRY_RUN, n = switch to LIVE) [Y/n]: " dry_run_yn
+    case "${dry_run_yn:-y}" in
+      n|N|no|NO) dry_run="0" ;;
+      *)         dry_run="1" ;;
+    esac
+  else
+    read -r -p "DRY_RUN mode (y = switch to DRY_RUN, N = stay LIVE) [y/N]: " dry_run_yn
+    case "${dry_run_yn:-n}" in
+      y|Y|yes|YES) dry_run="1" ;;
+      *)           dry_run="0" ;;
+    esac
+  fi
+  write_env=1
+fi
+
+if (( write_env )); then
   umask 077
   cat > "$ROOSTER_HOME/.env" <<EOF
 # Written by install.sh on $(date)
 BAMBOOHR_SUBDOMAIN="${subdomain}"
 BAMBOOHR_EMPLOYEE_ID="${employee_id}"
 TZ="${tz}"
-ROOSTER_AUTH_FAIL_LOG_COOLDOWN_HOURS="6"
-ROOSTER_WHOS_OUT_CACHE_TTL_SECONDS="1800"
+ROOSTER_AUTH_FAIL_LOG_COOLDOWN_HOURS="${cooldown_hours}"
+ROOSTER_WHOS_OUT_CACHE_TTL_SECONDS="${whos_out_ttl}"
 DRY_RUN="${dry_run}"
 EOF
   chmod 600 "$ROOSTER_HOME/.env"
@@ -212,9 +269,22 @@ EOF
 fi
 
 # --- 4. config: BambooHR API key ------------------------------------------
-# The upfront preflight gate already confirmed the user has a key, so we
-# don't open a browser or print instructions here — straight to the prompt.
+# Three modes:
+#   (a) no api-key on disk → first-time, prompt for it
+#   (b) api-key on disk AND BAMBOO_ROOSTER_UPDATE_MODE=1 → ask "replace?";
+#       only prompt for a new key on yes (never print or delete the
+#       existing key without explicit confirmation)
+#   (c) api-key on disk and not in update mode → leave alone
+prompt_for_new_key=0
 if [[ ! -s "$ROOSTER_HOME/secrets/api-key" ]]; then
+  prompt_for_new_key=1
+elif [[ -n "${BAMBOO_ROOSTER_UPDATE_MODE:-}" ]]; then
+  read -r -p "Replace BambooHR API key? [y/N] " replace
+  case "${replace:-n}" in
+    y|Y|yes|YES) prompt_for_new_key=1 ;;
+  esac
+fi
+if (( prompt_for_new_key )); then
   step "saving BambooHR API key (paste the key — input is hidden, no echo)"
   read -rs -p "BambooHR API key: " key
   echo
@@ -244,21 +314,45 @@ _prompt_hhmm() {
 _hhmm_to_min() { local h="${1%:*}" m="${1#*:}"; echo $(( 10#$h * 60 + 10#$m )); }
 _min_to_hhmm() { printf "%02d:%02d" $(( $1 / 60 )) $(( $1 % 60 )); }
 
+# Decide whether to (re)collect the phase windows.
+collect_windows=0
 if [[ ! -f "$ROOSTER_HOME/windows.conf" ]]; then
-  step "configuring phase windows (one-time setup)"
+  collect_windows=1
+elif [[ -n "${BAMBOO_ROOSTER_UPDATE_MODE:-}" ]]; then
+  read -r -p "Change phase windows? [y/N] " change_windows
+  case "${change_windows:-n}" in
+    y|Y|yes|YES) collect_windows=1 ;;
+  esac
+fi
+
+if (( collect_windows )); then
+  # Pre-fill defaults from the existing file when present, otherwise hard
+  # defaults. Each prompt then uses current-or-default as the [bracket] hint.
+  m_start_d="08:30"; m_end_d="09:30"
+  l_start_d="12:45"; l_end_d="14:00"
+  e_start_d="17:30"; e_end_d="18:30"
+  if [[ -f "$ROOSTER_HOME/windows.conf" ]]; then
+    read -r _ m_start_d m_end_d < <(grep -E '^morning[[:space:]]'    "$ROOSTER_HOME/windows.conf")
+    read -r _ lo_s lo_e        < <(grep -E '^lunch-out[[:space:]]'  "$ROOSTER_HOME/windows.conf")
+    read -r _ li_s li_e        < <(grep -E '^lunch-in[[:space:]]'   "$ROOSTER_HOME/windows.conf")
+    read -r _ e_start_d e_end_d < <(grep -E '^evening[[:space:]]'    "$ROOSTER_HOME/windows.conf")
+    l_start_d="$lo_s"; l_end_d="$li_e"
+  fi
+
+  step "configuring phase windows (Enter to keep each default)"
   echo "Each phase fires at a uniform-random minute inside its range."
   echo
   echo "Morning clock-in window:"
-  morning_start=$(_prompt_hhmm "  earliest" "08:30")
-  morning_end=$(_prompt_hhmm   "  latest  " "09:30")
+  morning_start=$(_prompt_hhmm "  earliest" "$m_start_d")
+  morning_end=$(_prompt_hhmm   "  latest  " "$m_end_d")
   echo
   echo "Lunch break window (clock-out + clock-in fit inside):"
-  lunch_start=$(_prompt_hhmm "  earliest start " "12:45")
-  lunch_end=$(_prompt_hhmm   "  latest return  " "14:00")
+  lunch_start=$(_prompt_hhmm "  earliest start " "$l_start_d")
+  lunch_end=$(_prompt_hhmm   "  latest return  " "$l_end_d")
   echo
   echo "Evening clock-out window:"
-  evening_start=$(_prompt_hhmm "  earliest" "17:30")
-  evening_end=$(_prompt_hhmm   "  latest  " "18:30")
+  evening_start=$(_prompt_hhmm "  earliest" "$e_start_d")
+  evening_end=$(_prompt_hhmm   "  latest  " "$e_end_d")
 
   if (( $(_hhmm_to_min "$morning_end") <= $(_hhmm_to_min "$morning_start") )); then
     echo "morning end must be > start" >&2; exit 1

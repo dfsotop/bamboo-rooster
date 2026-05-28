@@ -89,11 +89,25 @@ EOF
   if [[ ! -t 0 ]]; then
     fail "non-interactive shell, can't prompt"
   fi
-  read -r -p "Continue with existing config? [Y/n] " answer </dev/tty
-  case "${answer:-y}" in
-    n|N|no|NO|nope) echo "aborted."; exit 0 ;;
+  read -r -p "Keep this config / edit it / abort? [keep/edit/abort, default keep] " answer </dev/tty
+  case "${answer:-keep}" in
+    k|K|keep|KEEP|y|Y|yes|YES)
+      export BAMBOO_ROOSTER_KEY_CONFIRMED=1
+      ;;
+    e|E|edit|EDIT|u|U|update|UPDATE)
+      # Edit mode: install.sh walks through each setting with current as
+      # default and asks per-item whether to change it. The disclaimer
+      # gate stays skipped — they already accepted at first install.
+      export BAMBOO_ROOSTER_KEY_CONFIRMED=1
+      export BAMBOO_ROOSTER_UPDATE_MODE=1
+      ;;
+    a|A|abort|ABORT|n|N|no|NO|nope)
+      echo "aborted."; exit 0
+      ;;
+    *)
+      echo "unrecognized answer '$answer'; aborting."; exit 0
+      ;;
   esac
-  export BAMBOO_ROOSTER_KEY_CONFIRMED=1
 fi
 
 # --- 3. preflight: disclaimer + API key required (first install only) -----
