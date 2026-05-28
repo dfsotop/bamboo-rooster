@@ -35,6 +35,7 @@ rooster — randomized BambooHR clock-in/out
 Usage:
   rooster <phase>          Run a phase. Gates run, random sleep within the
                            phase window, then clock_in or clock_out.
+  rooster config           Print the active configuration (read-only).
   rooster edit ...         Edit a closed clock entry's start/end.
                            Run `rooster edit --help` for the flags.
   rooster --auth-check     Live API round-trip; verifies the key works.
@@ -125,6 +126,131 @@ source "$ROOSTER_ROOT/lib/bamboo.sh"
 source "$ROOSTER_ROOT/lib/gates.sh"
 
 # --- Subcommands ----------------------------------------------------------
+
+if [[ "${1:-}" == "config" ]]; then
+  PHASE=config
+  shift
+  case "${1:-}" in
+    -h|--help|help)
+      cat <<'EOF'
+Usage: rooster config
+
+Print the active rooster configuration — subdomain, employee ID,
+timezone, DRY_RUN mode, phase windows, scheduler state, log freshness.
+Read-only: no API calls, no files modified. The API key value is
+never printed; only its file size and permissions.
+EOF
+      exit 0
+      ;;
+  esac
+
+  _bold() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+
+  printf '🐓 bamboo-rooster · config\n'
+
+  _bold "Paths"
+  printf '  source dir       %s\n' "$ROOSTER_ROOT"
+  printf '  state dir        %s\n' "$ROOSTER_HOME"
+  printf '  log file         %s\n' "$ROOSTER_LOG_FILE"
+
+  _bold "BambooHR"
+  printf '  subdomain        %s\n' "${BAMBOOHR_SUBDOMAIN:-(not set)}"
+  if [[ -n "${BAMBOOHR_EMPLOYEE_ID:-}" ]]; then
+    printf '  employee ID      %s (pinned in .env)\n' "$BAMBOOHR_EMPLOYEE_ID"
+  else
+    cached_id=$(state_get self_employee_id)
+    if [[ -n "$cached_id" ]]; then
+      printf '  employee ID      %s (cached; auto-resolved from key)\n' "$cached_id"
+    else
+      printf '  employee ID      (not resolved yet — run rooster --auth-check)\n'
+    fi
+  fi
+  if [[ -f "$ROOSTER_API_KEY_FILE" ]]; then
+    key_size=$(wc -c < "$ROOSTER_API_KEY_FILE" | tr -d ' ')
+    key_perms=$(ls -l "$ROOSTER_API_KEY_FILE" | awk '{print $1}')
+    if [[ "$key_perms" == -rw-------* ]]; then
+      printf '  api key file     %s bytes, chmod 600 ✓\n' "$key_size"
+    else
+      printf '  api key file     %s bytes, WARN perms %s (should be -rw-------)\n' "$key_size" "$key_perms"
+    fi
+  else
+    printf '  api key file     (missing — run rooster-rotate-key)\n'
+  fi
+
+  _bold "Schedule"
+  if [[ "${DRY_RUN:-0}" == "1" ]]; then
+    printf '  mode             DRY_RUN — no real clock_in/out\n'
+  else
+    printf '  mode             LIVE — real clock_in/out\n'
+  fi
+  printf '  TZ               %s\n' "${TZ:-(unset, defaults to system TZ)}"
+
+  if [[ -f "$WINDOWS_CONF" ]]; then
+    while read -r p start end; do
+      [[ "$p" =~ ^# ]] && continue
+      [[ -z "$p" ]] && continue
+      printf '  %-10s %s – %s  → %s\n' "$p" "$start" "$end" "$(action_for_phase "$p")"
+    done < "$WINDOWS_CONF"
+    if [[ "$WINDOWS_CONF" == "$ROOSTER_ROOT/config/windows.conf" ]]; then
+      printf '  (using repo defaults — rm ~/.bamboo-rooster/windows.conf to re-prompt)\n'
+    fi
+  else
+    printf '  windows          (none — re-run install.sh)\n'
+  fi
+
+  _bold "Scheduler"
+  case "$(uname -s)" in
+    Darwin)
+      uid=$(id -u)
+      for ph in morning lunch-out lunch-in evening; do
+        label="com.bamboo-rooster.${ph}"
+        if launchctl list 2>/dev/null | awk -v p="$label" '$3 == p' | grep -q .; then
+          printf '  %-10s launchd loaded\n' "$ph"
+        else
+          printf '  %-10s NOT LOADED — run install.sh\n' "$ph"
+        fi
+      done
+      ;;
+    Linux)
+      for ph in morning lunch-out lunch-in evening; do
+        unit="bamboo-rooster-${ph}.timer"
+        if systemctl --user is-enabled "$unit" >/dev/null 2>&1; then
+          printf '  %-10s systemd enabled\n' "$ph"
+        else
+          printf '  %-10s NOT ENABLED — run install.sh\n' "$ph"
+        fi
+      done
+      ;;
+    *)
+      printf '  (unknown OS: %s)\n' "$(uname -s)"
+      ;;
+  esac
+
+  _bold "Health"
+  if [[ -f "$ROOSTER_LOG_FILE" ]]; then
+    log_count=$(wc -l < "$ROOSTER_LOG_FILE" | tr -d ' ')
+    printf '  log events       %s\n' "$log_count"
+    if [[ "$log_count" -gt 0 ]]; then
+      last_event=$(tail -1 "$ROOSTER_LOG_FILE" | jq -r '
+        "\(.ts) — \(.phase) \(.event)" +
+        (if .reason  then " (\(.reason))" else "" end) +
+        (if .http_status then " HTTP \(.http_status)" else "" end)
+      ' 2>/dev/null)
+      printf '  last event       %s\n' "${last_event:-(unparseable)}"
+    fi
+  else
+    printf '  log events       (none yet)\n'
+  fi
+  if [[ -f "$SKIP_TODAY_FILE" ]]; then
+    if skip_today_active; then
+      printf '  skip-today       ACTIVE — every phase will skip today\n'
+    else
+      printf '  skip-today       file present but stale (next phase will clear it)\n'
+    fi
+  fi
+
+  exit 0
+fi
 
 if [[ "${1:-}" == "edit" ]]; then
   PHASE=edit
