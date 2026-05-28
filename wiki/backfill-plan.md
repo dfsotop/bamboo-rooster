@@ -1,8 +1,6 @@
-# Backfill — design plan (v2: backfill-only scheduler)
+# Backfill — design plan (v3: additive mode)
 
-A pivot to a **single-fire daily scheduler** that scans backward through today + the past 6 days and creates one clock-in/clock-out entry for each missing workday. No lunch. Replaces the four-phase scheduler (morning / lunch-out / lunch-in / evening) as the **only** automated mode shipped by the installer.
-
-The four-phase code stays in the codebase for manual use (`rooster morning`, etc.) but is no longer scheduled.
+A new schedulable mode that scans today + the past 6 days, fills any missing workday with a single clock-in/clock-out (no lunch), stops at the first day that already has an entry. **Strictly additive** — the existing four-phase live tracker stays, no migration is run, and the user explicitly chooses at install time which mode(s) they want.
 
 ---
 
@@ -10,111 +8,146 @@ The four-phase code stays in the codebase for manual use (`rooster morning`, etc
 
 | # | Decision | Value |
 |---|---|---|
-| 1 | Default mode | **backfill-only** — installer no longer schedules the 4 phases |
+| 1 | New mode positioning | **additive** — installs alongside the live tracker, not in place of it |
 | 2 | Default scan fire window | **16:00 – 16:30** (Mon–Fri); scan INCLUDES today |
 | 3 | Day cap | `BACKFILL_MAX_DAYS` in `.env`, default **7** |
-| 4 | Manual `rooster backfill` | available regardless of scheduling |
+| 4 | Manual `rooster backfill` | available regardless of scheduling state |
 | 5 | Time-window source for filled entries | reuse existing `morning` + `evening` windows |
+| 6 | Migration | **none** — user chooses what to enable; existing installs are untouched until the user explicitly toggles via update mode |
 
 ---
 
-## Behavior
+## Two independent modes
+
+The installer treats each as a separate Y/N choice:
+
+### Mode A — Live tracker (existing)
+Schedules four phases through the day: morning clock-in, lunch-out, lunch-in, evening clock-out, each at a uniformly-random minute inside its configured window. Real-time tracking of the workday.
+
+### Mode B — Daily backfill (new)
+Schedules one daily sweep at 16:00 + random offset. Iterates `[today, today-1, …, today-(MAX_DAYS-1)]`, skips weekends and time-off days, stops on first existing entry, creates one entry per missing workday using random minutes from the `morning` and `evening` windows. No lunch.
+
+**A user can enable A, B, both, or neither.** Both is harmless: backfill's "stop on existing entry" rule means it always defers to the live tracker on workdays where the user clocked normally; it only fills gaps.
+
+---
+
+## Behavior (mode B)
 
 Fires once daily, Mon–Fri, at a uniformly-random minute inside the backfill window (default 16:00–16:30).
 
-Iteration order: `[today, yesterday, day-2, …, day-(BACKFILL_MAX_DAYS - 1)]`. For each date:
+For each date in `[today, …, today-(BACKFILL_MAX_DAYS - 1)]`:
 
-1. **Weekend filter** — if Saturday/Sunday, skip + continue (no STOP).
-2. **Time-off gate** — call `/time_off/whos_out` for that date. If user is on any approved time-off (PTO, sick, doctor, parental, bereavement, or a company holiday entry), skip + continue.
-3. **Idempotency gate** — call `/time_tracking/timesheet_entries?employeeIds=me&start=DATE&end=DATE`. If the response has **any** entry (clock or hour, open or closed, manual or scripted), **STOP**.
-4. **Fill** — pick random local HH:MM for clock-in inside the `morning` window, random HH:MM for clock-out inside the `evening` window, build a `clock_entries/store` payload with `{employeeId, date, start, end}` (no `id` = create), POST.
+1. **Weekend filter** — Sat/Sun → skip + continue (no STOP).
+2. **Time-off gate** — `/time_off/whos_out` for that date covers user (any approved type, including company holidays) → skip + continue.
+3. **Idempotency gate** — `/time_tracking/timesheet_entries?employeeIds=me&start=DATE&end=DATE` has any entry → **STOP**.
+4. **Fill** — random local HH:MM for clock-in inside `morning` window, random HH:MM for clock-out inside `evening` window; POST `clock_entries/store` with `{employeeId, date, start, end}` and no `id` (= create).
 
-Optimization: fetch the whole 7-day `whos_out` once at the top, filter per day in bash. Cuts API cost from `2N` to `N+1`.
-
-**Real-world flow:**
-- Normal day: user already clocked in (morning) and out (evening). At 16:00 backfill fires, sees today's open entry, STOPS. Cost: 1 API call.
-- Today is fresh / forgot: backfill fires, today empty → fills with random 08:45–17:42 etc. Goes to yesterday → already filled → STOP. Cost: 3 calls (whos_out, today's timesheet, today's create, then yesterday's timesheet which hits, stop).
-- Came back from vacation: today empty, yesterday on PTO (skip), 2 days ago on PTO, …, day-7 hits 7-day cap. Nothing illegitimate is filled — only honest empty workdays.
+Optimization: fetch the whole 7-day `whos_out` once at the top, filter per day in bash. Reduces API cost from `2N` to `N+1`.
 
 ---
 
-## Schedule
+## Scheduler outputs
 
-One launchd plist / systemd timer:
+Existing `install/launchd.sh` and `install/systemd.sh` currently install one plist/timer per phase, iterating a hardcoded `morning lunch-out lunch-in evening` list. After this change:
+
+- The list comes from **`windows.conf`** instead. Every non-comment line is a scheduled phase. Adding/removing a line in `windows.conf` directly controls which plists/timers exist.
+- The scheduler installer additionally **boots-out + removes** any plist/timer for a phase NOT in the new `windows.conf`, so disabling a phase via update mode actually unloads it.
+
+`windows.conf` shapes per mode:
 
 ```
-backfill   Mon–Fri at 16:00 + random 0-30 min
+# Mode A enabled:                # Mode B enabled:        # Both:
+morning    08:30 09:30           morning    08:30 09:30   morning    08:30 09:30
+lunch-out  12:45 13:15           evening    17:30 18:30   lunch-out  12:45 13:15
+lunch-in   13:30 14:00           backfill   16:00 16:30   lunch-in   13:30 14:00
+evening    17:30 18:30                                    evening    17:30 18:30
+                                                          backfill   16:00 16:30
 ```
 
-Replaces the four existing plists (`morning`, `lunch-out`, `lunch-in`, `evening`). The migration step in `install.sh` unloads any existing four-phase plists during the update.
+Note: when ONLY mode B is enabled, `morning` and `evening` lines are still written because backfill uses them as the random-minute source for the entries it creates. The `lunch-out` / `lunch-in` lines are only written when mode A is enabled. The `backfill` line is only written when mode B is enabled.
 
 ---
 
-## Configuration
+## UX — install prompts
+
+### First-time install
+
+After the existing subdomain / employee-id / TZ / DRY_RUN / API-key prompts:
+
+```
+The rooster has two scheduling modes — pick either, both, or neither.
+
+(1) Live tracker: clocks in/out 4 times a day (morning, lunch break,
+    evening) at randomized minutes inside the windows you configure.
+    Real-time tracking.
+
+    Enable live tracker? [Y/n] _
+
+(2) Daily backfill: a single 16:00 sweep that scans the last 7 days,
+    finds any workday with no entry, and adds one clock-in/clock-out
+    (random morning/evening times, no lunch). Stops on the first
+    already-filled day. Catch-up safety net.
+
+    Enable daily backfill? [y/N] _
+```
+
+Defaults: live tracker **Y** (preserves the current fresh-install behavior), backfill **N**.
+
+If both are N: warn the user (`⚠ No phases scheduled. Manual 'rooster <phase>' and 'rooster backfill' still work.`), proceed without installing any plist.
+
+Then per-mode follow-up prompts only appear if that mode is enabled:
+- Live tracker → existing morning/lunch/evening window prompts
+- Backfill → `BACKFILL_MAX_DAYS` (default 7) + backfill window prompt (default 16:00 16:30)
+
+### Update mode
+
+When user picks "edit" in `setup.sh`'s existing-config menu:
+
+```
+Current scheduling: live tracker ENABLED, backfill DISABLED
+
+Keep live tracker enabled? [Y/n] _
+Enable daily backfill? [y/N] _
+```
+
+Defaults reflect the current state. Yes/no on each toggles independently. The wizard then walks through the relevant window prompts for any mode that's newly enabled or that the user chose to re-tune.
+
+### No migration prompt
+
+Existing four-phase users running the new `install.sh` see no special warning. If they pick "keep" in the update menu, nothing changes — their 4 plists stay, no backfill. If they pick "edit", they see the same toggles as above with the current state pre-selected; they can opt into backfill if they want.
+
+---
+
+## Configuration files
 
 ### `~/.bamboo-rooster/.env`
 
-New required field:
+Add one optional field (only written when backfill is enabled):
 ```
 BACKFILL_MAX_DAYS="7"
 ```
 
-(Existing fields — `BAMBOOHR_SUBDOMAIN`, `BAMBOOHR_EMPLOYEE_ID`, `TZ`, `DRY_RUN`, cooldowns — all kept unchanged.)
+Unset → default to 7 at runtime. Existing `.env` files without this field keep working.
+
+Other fields unchanged.
 
 ### `~/.bamboo-rooster/windows.conf`
 
-```
-morning    08:30 09:30
-evening    17:30 18:30
-backfill   16:00 16:30
-```
+Becomes the source of truth for which phases are scheduled. Lines vary by mode (see "Scheduler outputs" above).
 
-The `lunch-out` and `lunch-in` lines are no longer written by the installer for new installs. **Existing installs upgrading**: the lines are left alone (no destructive edit) so manual `rooster lunch-out` still works for users who used to invoke them; only the launchd plists are removed.
+### `config/config.example.env` and `config/windows.conf`
 
-### Manual invocation
+Updated to mention the new `BACKFILL_MAX_DAYS` field and the optional `backfill` window line.
+
+---
+
+## Manual invocation
 
 ```bash
 rooster backfill [--max-days N] [--dry-run-only]
 ```
 
-Same gate logic as scheduled, runs immediately. `--max-days N` overrides the env-var default (1–30 allowed). `--dry-run-only` forces dry-run for the invocation regardless of `.env`.
-
----
-
-## Migration for existing users
-
-When an existing 4-phase install runs the new `install.sh`:
-
-1. **Detect** existing plists at `~/Library/LaunchAgents/com.bamboo-rooster.{morning,lunch-out,lunch-in,evening}.plist`.
-2. Print a one-time migration notice:
-   ```
-   ⚠ Migrating from 4-phase scheduler to backfill-only mode.
-     The morning / lunch-out / lunch-in / evening launchd jobs will be
-     removed and replaced with a single daily backfill job.
-     
-     Your config and API key are preserved. The phase commands
-     (rooster morning, etc.) remain available for manual use.
-   ```
-3. Ask explicit confirmation: `Proceed? [y/N]` — opt-in to the migration. Existing users get one chance to bail if they prefer the old behavior.
-4. On yes: `launchctl bootout` + `rm` each of the four old plists, then install the new `bamboo-rooster.backfill` plist.
-5. Append `BACKFILL_MAX_DAYS=7` to `.env` if not present.
-6. Append `backfill 16:00 16:30` to `windows.conf` if not present.
-
-Brand-new installs see no migration prompt — they just install the backfill scheduler from the start.
-
----
-
-## What the four-phase code becomes
-
-| | Before | After |
-|---|---|---|
-| `bin/rooster morning` (and lunch-out, lunch-in, evening) | scheduled + invokable | **invokable only** — kept for manual override / testing |
-| `lib/gates.sh::already_clocked_for_phase` | used by phases | unchanged; phases that call it still work manually |
-| `lib/log.sh::_emit_human` phase rendering | full | unchanged |
-| Launchd / systemd plists for the 4 phases | shipped | **not shipped**; migration removes any existing ones |
-| `install/launchd.sh` / `install/systemd.sh` | install 4 plists | install 1 plist (`backfill`) |
-
-The four-phase code becomes "advanced manual mode" — useful if a user wants to test or run an individual phase by hand. Documented as such in the README.
+Always available, even when backfill isn't scheduled. Useful for "I forgot to clock yesterday, fix it now" one-shots. `--max-days N` overrides the env default (1–30 allowed). `--dry-run-only` forces dry-run regardless of `.env`.
 
 ---
 
@@ -122,7 +155,7 @@ The four-phase code becomes "advanced manual mode" — useful if a user wants to
 
 ### New code
 
-**`lib/bamboo.sh`** — add a create variant (no `id`):
+**`lib/bamboo.sh`** — create variant:
 ```bash
 bamboo_create_clock_entry() {
   local employee_id="$1" date="$2" start="$3" end="$4"
@@ -137,111 +170,101 @@ bamboo_create_clock_entry() {
 }
 ```
 
-**`lib/gates.sh`** — helpers for backfill:
+**`lib/gates.sh`** — date / window helpers:
 ```bash
-bamboo_get_whos_out_range()    # date range
-date_is_weekend()              # Mon..Fri test
-date_off_in_whos_out()         # cached lookup
-date_has_timesheet_entry()     # idempotency check
-random_hhmm_in_window()        # picks "HH:MM" string in window
+bamboo_get_whos_out_range()      # date range version of current helper
+date_is_weekend()                # Mon..Fri test
+date_off_in_whos_out()           # lookup against cached range
+date_has_timesheet_entry()       # idempotency check per date
+random_hhmm_in_window()          # picks "HH:MM" string in window
+iterate_dates_from_today()       # echo today, today-1, …, today-(N-1)
 ```
 
 **`bin/rooster backfill`** — new subcommand:
-- argv: `--max-days N` (1–30), `--dry-run-only`, `--help`
-- read `BACKFILL_MAX_DAYS`, `morning`, `evening`, `backfill` windows
-- when scheduled (no args): pick random offset in backfill window, sleep
+- argv: `--max-days N`, `--dry-run-only`, `--help`
+- if scheduled (no args + windows.conf has a `backfill` line): pick random sleep offset, sleep
 - pre-fetch whos_out for the date range (one call)
-- iterate dates today-back, apply gates, fill or stop, log per event
-- final `backfill_complete` event with `days_filled` / `days_scanned` / `stopped_at`
+- iterate dates, apply gates, fill or stop
+- log events + final `backfill_complete` summary
 
-**`install/launchd.sh`** — replace four `_write_plist` calls with one (`backfill`); add migration cleanup (`launchctl bootout` the four old labels if loaded).
-
-**`install/systemd.sh`** — same for systemd: one unit + migration cleanup.
+**`install/launchd.sh` + `install/systemd.sh`** — generalize:
+- read phases from `windows.conf` instead of hardcoding 4 names
+- install a plist/timer per non-comment line
+- compute set of "previously known" phases (morning, lunch-out, lunch-in, evening, backfill) and `bootout + rm` any that aren't in the current `windows.conf`
+- this is the **only** mechanism that ever removes plists — no migration code path
 
 **`install.sh`**:
-- migration detection + confirmation prompt
-- prompt for `BACKFILL_MAX_DAYS` (default 7) in first-time + update modes
-- prompt for `backfill` window (default `16:00 16:30`) in first-time + update modes
-- write `BACKFILL_MAX_DAYS` to `.env`
-- write `backfill` line to `windows.conf`
-- drop the `lunch-out` / `lunch-in` lines from new installs' `windows.conf` writes
-
-**`lib/log.sh::_emit_human`** — new event verbs:
-- `backfill_started`: `· [HH:MM:SS] backfill: scanning 7 days back`
-- `backfill_filled`: `✓ [HH:MM:SS] backfill: filled 2026-05-25 (08:47 – 17:53)`
-- `backfill_skipped_offday`: `· [HH:MM:SS] backfill: 2026-05-22 off (PTO / sick / holiday)`
-- `backfill_skipped_weekend`: `· [HH:MM:SS] backfill: 2026-05-23 weekend`
-- `backfill_stopped`: `· [HH:MM:SS] backfill: stopped at 2026-05-24 (already filled)`
-- `backfill_complete`: `✓ [HH:MM:SS] backfill: 2 days filled, 5 scanned, stopped at 2026-05-24`
+- two new prompts in first-time setup: enable live tracker? enable backfill?
+- conditionally write `lunch-out` / `lunch-in` lines (only if live tracker on)
+- conditionally write `backfill` line (only if backfill on)
+- conditionally prompt `BACKFILL_MAX_DAYS` (only if backfill on)
+- update mode: two new toggles, defaults = current state, walk through window prompts only for modes being enabled
 
 ### Modified
 
 - `bin/rooster --help` lists `backfill`
-- `config/config.example.env` adds `BACKFILL_MAX_DAYS="7"`
-- `config/windows.conf` adds `backfill 16:00 16:30`, drops `lunch-out` / `lunch-in` from defaults
-- README + QUICKSTART rewritten to describe the single-fire model
-- `uninstall.sh` (via scheduler installers) tries to remove BOTH the new backfill unit AND the four legacy units, ignoring "not loaded" errors
+- `bin/rooster config` shows backfill window + MAX_DAYS if enabled
+- `lib/log.sh::_emit_human` — new event verbs for `backfill_*`
+- `README.md` / `docs/QUICKSTART.md` describe both modes side by side
 
 ### Unchanged
 
-- `lib/auth.sh`, `lib/state.sh` core
+- `lib/auth.sh`, `lib/state.sh`, `lib/log.sh` core
 - `bin/rotate-key`, `bin/rooster-status`, `bin/rooster --auth-check`, `rooster edit`, `rooster config`, `rooster update`
-- The MIT license, disclaimer, API-key gate, dependency consent prompt
-- The pre-install dependency check (jq still required)
+- All four phase code paths (`bin/rooster morning` etc.) — they keep working both as scheduled jobs (when mode A is on) and as manual one-shots (always).
+- License, disclaimer, dependency gate, secret handling
+- Existing 4-phase users who don't opt into anything see zero behavioral change
 
 ---
 
 ## Test plan
 
-Wave 1 — pure logic, no network:
-- date iteration produces `[today, today-1, …, today-6]` for `MAX_DAYS=7`
-- weekend filter excludes Sat/Sun in the middle of the range
-- random HH:MM falls inside the [start, end] window
+Wave 1 — pure logic:
+- date iteration produces the right list for various MAX_DAYS values
+- random HH:MM falls inside [start, end]
+- `windows.conf`-driven plist install + boot-out: add/remove a line, see plist appear/disappear
 
 Wave 2 — live API, `DRY_RUN=1`:
-- All 7 days empty + no PTO → would-fill 5 weekdays, 2 weekends skipped, no STOP
-- Today already has an entry → STOP immediately, 0 filled
-- Today empty, yesterday on PTO, day-2 already filled → 1 fill (today), 1 skip (PTO), STOP at day-2
+- today empty, yesterday empty, day-2 filled → 2 fills (today + yesterday), STOP
+- today on PTO → skip; yesterday already filled → STOP
+- entire 7-day window empty + no PTO → 5 weekday fills
 
 Wave 3 — live API, `DRY_RUN=0`:
-- Delete a known-empty past day in BambooHR's UI; verify backfill creates one entry with realistic random times
-- Verify via `rooster-status` and BambooHR UI
+- Delete a known-empty past day in BambooHR's UI; trigger `rooster backfill`; verify single entry with realistic times
 
-Wave 4 — migration:
-- On an install with 4 plists loaded, run new `install.sh`
-- Answer "no" → migration aborts, 4 plists stay
-- Answer "yes" → 4 plists unloaded + removed, 1 backfill plist loaded
-- Re-run install.sh → no migration prompt (4 plists already gone), idempotent
+Wave 4 — install / mode toggles:
+- Fresh install, both Y → 5 plists/timers
+- Fresh install, only live tracker → 4 plists/timers
+- Fresh install, only backfill → 1 plist/timer
+- Fresh install, neither → 0 plists/timers + warning
+- Existing 4-phase install, run update mode, toggle backfill ON → 5 plists/timers; OFF → back to 4
+- Existing 4-phase install, run update mode, toggle live tracker OFF + backfill ON → 1 plist (backfill); the 4 old plists are gone
 
 Wave 5 — manual override:
-- `rooster morning` (or lunch-out/lunch-in/evening) still works as one-shot command
-- `rooster backfill` works without backfill being scheduled
-- `rooster backfill --max-days 14 --dry-run-only` accepts the override
+- `rooster backfill` works when only live tracker is scheduled (not auto-fired, but manually invocable)
+- `rooster morning` still works when only backfill is scheduled
+
+---
+
+## Open question — last sanity check
+
+When today simultaneously has an existing entry AND `whos_out` says the user is off (e.g. a half-day after sick leave), which gate wins?
+
+- **Time-off first (proposed)**: skip + continue. Backfill stays out of contested days entirely; the next-day's scan will look further back.
+- **Idempotency first**: STOP because an entry exists; backfill stops the scan even on a PTO day.
+
+I lean **time-off first** — safer, doesn't second-guess HR. **OK to ship with that ordering?**
 
 ---
 
 ## Implementation order
 
-If you green-light, sequence (focused half-day):
+If you green-light, ~3 focused hours:
 
-1. **Probe `clock_entries/store` create** — POST without `id`, confirm it returns `201` and stores a new entry on a known past day. (~5 min, may need to delete the entry afterward.)
-2. **`lib/bamboo.sh::bamboo_create_clock_entry`** + helpers in `lib/gates.sh` for date iteration / windowed random / whos_out range. (~30 min.)
-3. **`bin/rooster backfill`** subcommand end-to-end with `DRY_RUN=1`. Log events, terminal output. (~45 min.)
-4. **`install/launchd.sh` + `install/systemd.sh`** — single plist generator, migration cleanup. (~30 min.)
-5. **`install.sh`** — migration prompt, `BACKFILL_MAX_DAYS` + `backfill` window prompts, drop lunch-out/in from new windows.conf writes. (~30 min.)
-6. **End-to-end live test** with `DRY_RUN=0` on a real missed day. (~15 min.)
-7. **README + QUICKSTART rewrite**. (~15 min.)
-
-Total: ~3 hours of focused work.
-
----
-
-## Open question — one last sanity check
-
-When today's `whos_out` says you're on PTO/sick and you ALSO have an existing entry already (e.g. you decided to come in for a half-day on a sick day): which gate wins?
-
-Per the algorithm above: idempotency runs AFTER the time-off gate, so we'd SKIP for time-off and never see the existing entry. That feels right — backfill stays out of contested days entirely.
-
-But if you want "any existing entry stops the scan, even on PTO days" (so that backfill doesn't silently keep going past a day where you ALSO have a real entry), the order can be swapped.
-
-My read: time-off-first is safer (don't fabricate, don't second-guess HR), idempotency-second is fine for the rest. **OK to ship with time-off-first?**
+1. **Probe `clock_entries/store` create** (no `id`). Confirm HTTP 201 + correct stored shape. (~5 min)
+2. **`lib/bamboo.sh::bamboo_create_clock_entry`** + helpers in `lib/gates.sh`. (~30 min)
+3. **`bin/rooster backfill`** subcommand, DRY_RUN end-to-end. (~45 min)
+4. **`install/launchd.sh` + `install/systemd.sh`** — `windows.conf`-driven plist generation, boot-out for removed lines. (~30 min)
+5. **`install.sh`** — two mode-toggle prompts in first-time + update modes, conditional window prompts, `BACKFILL_MAX_DAYS` handling. (~45 min)
+6. **End-to-end live test** with `DRY_RUN=0` on a real missed day. (~15 min)
+7. **README + QUICKSTART rewrite**: describe both modes, defaults, toggling. (~15 min)
