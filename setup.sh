@@ -41,10 +41,66 @@ case "$(uname -s)" in
   *) fail "Unsupported OS: $(uname -s)" ;;
 esac
 
-# --- 2. preflight: disclaimer + API key required -------------------------
+# --- 2. existing-config short-circuit -------------------------------------
+# If the user already has a working config (BambooHR .env + api-key on
+# disk), don't make them re-confirm the disclaimer or re-paste the key.
+# Show the current settings and ask one yes/no to proceed with the
+# update. Sets BAMBOO_ROOSTER_KEY_CONFIRMED so the disclaimer block below
+# is skipped.
+EXISTING_HOME="$HOME/.bamboo-rooster"
+if [[ -f "$EXISTING_HOME/.env" && -s "$EXISTING_HOME/secrets/api-key" ]]; then
+  bold "Found existing bamboo-rooster config at $EXISTING_HOME"
+
+  _envget() { grep -E "^$1=" "$EXISTING_HOME/.env" 2>/dev/null \
+    | cut -d= -f2- | tr -d '"' | tr -d "'" | tr -d ' '; }
+
+  cur_subdomain=$(_envget BAMBOOHR_SUBDOMAIN)
+  cur_emp=$(_envget BAMBOOHR_EMPLOYEE_ID)
+  cur_tz=$(_envget TZ)
+  cur_dry=$(_envget DRY_RUN)
+
+  printf '  subdomain     %s\n' "${cur_subdomain:-(not set)}"
+  printf '  employee ID   %s\n' "${cur_emp:-(auto-resolved from key)}"
+  printf '  timezone      %s\n' "${cur_tz:-(unset)}"
+  if [[ "$cur_dry" == "1" ]]; then
+    printf '  mode          DRY_RUN — no real clock_in/out\n'
+  else
+    printf '  mode          LIVE — real clock_in/out\n'
+  fi
+  printf '  api key file  %s bytes\n' "$(wc -c < "$EXISTING_HOME/secrets/api-key" | tr -d ' ')"
+  if [[ -f "$EXISTING_HOME/windows.conf" ]]; then
+    echo "  phase windows:"
+    grep -E '^[a-z]' "$EXISTING_HOME/windows.conf" \
+      | awk '{printf "    %-10s %s – %s\n", $1, $2, $3}'
+  fi
+
+  cat <<EOF
+
+This will fetch the latest code and re-run the installer with the above
+config — no prompts, just download + regenerate the scheduler units.
+
+To reconfigure something, abort and then:
+  rm $EXISTING_HOME/windows.conf      → re-prompt time windows
+  rm $EXISTING_HOME/.env              → re-prompt subdomain/TZ/DRY_RUN
+  rooster-rotate-key                  → replace the API key
+  rm -rf $EXISTING_HOME               → start completely fresh
+
+EOF
+  if [[ ! -t 0 ]]; then
+    fail "non-interactive shell, can't prompt"
+  fi
+  read -r -p "Continue with existing config? [Y/n] " answer </dev/tty
+  case "${answer:-y}" in
+    n|N|no|NO|nope) echo "aborted."; exit 0 ;;
+  esac
+  export BAMBOO_ROOSTER_KEY_CONFIRMED=1
+fi
+
+# --- 3. preflight: disclaimer + API key required (first install only) -----
 # Asked BEFORE any system change so we don't install jq or download the
-# repo for someone who can't (or won't) use the tool. Exports
-# BAMBOO_ROOSTER_KEY_CONFIRMED so install.sh further down doesn't re-prompt.
+# repo for someone who can't (or won't) use the tool. Skipped when the
+# block above already confirmed an existing install.
+if [[ -z "${BAMBOO_ROOSTER_KEY_CONFIRMED:-}" ]]; then
 cat <<'EOF'
 
 DISCLAIMER
@@ -85,8 +141,9 @@ EOF
     exit 0
     ;;
 esac
+fi  # end first-install disclaimer/gate
 
-# --- 3. dependency summary + consent --------------------------------------
+# --- 4. dependency summary + consent --------------------------------------
 # No Xcode CLT (we use curl + tar for the repo download). No Homebrew either:
 # the only thing it would install for us is jq, and jq publishes single-file
 # macOS binaries (~600 KB) we can download directly from its GitHub releases.
@@ -116,7 +173,7 @@ else
   esac
 fi
 
-# --- 4. jq (direct binary download with SHA-256 verification) ------------
+# --- 5. jq (direct binary download with SHA-256 verification) ------------
 if (( need_jq )); then
   case "$(uname -m)" in
     arm64)  jq_arch="arm64"; jq_sha="$JQ_SHA256_arm64" ;;
@@ -145,7 +202,7 @@ if (( need_jq )); then
   ok "jq installed at $JQ_INSTALL_DIR/jq (sha256 verified)"
 fi
 
-# --- 5. fetch repo via tarball -------------------------------------------
+# --- 6. fetch repo via tarball -------------------------------------------
 # Guard against env-poisoned BAMBOO_ROOSTER_INSTALL_DIR being set to
 # something we'd `rm -rf` later — like $HOME or /. Refuse without prejudice.
 case "$INSTALL_DIR" in
@@ -176,6 +233,6 @@ else
 fi
 ok "code ready at $INSTALL_DIR"
 
-# --- 6. hand off to install.sh -------------------------------------------
+# --- 7. hand off to install.sh -------------------------------------------
 say "Running setup wizard"
 exec "$INSTALL_DIR/install.sh"
